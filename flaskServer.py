@@ -23,7 +23,7 @@ def hello_world_post():
     }
     return jsonify(res), 200
 
-@app.route('/sync', methods=['POST'])
+@app.route('/sync/in', methods=['POST'])
 def sync_naver_reservation():
     req = request.get_json()
     targetDateStr = req['targetDateStr']
@@ -42,7 +42,7 @@ def sync_naver_reservation():
     }
     return jsonify(res), 200
 
-@app.route('/sync', methods=['GET'])
+@app.route('/sync/out', methods=['POST'])
 def get_naver_reservation():
     req = request.get_json()
     if checkActivationKey(req) == False:
@@ -51,7 +51,11 @@ def get_naver_reservation():
             'data': {}
         }
         return jsonify(res), 401
-    notCanceledBookingList, allBookingList = syncManager.getNaverReservation(1)
+    monthSize = req['monthSize']
+    print("monthSize: ", monthSize)
+    if monthSize == None:
+        monthSize = 1
+    notCanceledBookingList, allBookingList = syncManager.getNaverReservation(monthSize)
     res = {
         'message': 'Sync Naver Reservation',
         'notCanceledBookingList': notCanceledBookingList,
