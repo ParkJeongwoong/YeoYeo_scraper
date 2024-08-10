@@ -1,5 +1,7 @@
 import driver
 from selenium import webdriver
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
@@ -90,6 +92,11 @@ class ChromeDriver(driver.Driver):
         ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
 
     def login(self, id, pw):
+        # 페이지가 완전히 로드될 때까지 대기
+        WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.ID, "id"))
+        )
+
         self.driver.execute_script(
             f"document.querySelector('input[id=\"id\"]').setAttribute('value', '{id}')"
         )

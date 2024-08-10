@@ -49,6 +49,7 @@ def SyncNaver(targetDateStr: str, targetRoom: str):
     reservationManager = simpleManagementController.SimpleManagementController()
     driver = chromeDriver.ChromeDriver()
     driver.goTo(naverLoginUrl)
+    print('네이버 로그인 페이지 이동')
 
     # 로그인
     driver.login(id, pw)
