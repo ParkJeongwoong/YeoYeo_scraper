@@ -22,11 +22,11 @@ class ChromeDriver(driver.Driver):
         options = Options()
 
         # headless 옵션 설정
-        # options.add_argument('--headless=new')  # 'new'를 사용하여 새로운 headless 모드를 활성화
-        # options.add_argument('--no-sandbox')
-        # options.add_argument('--disable-blink-features=AutomationControlled')
-        # options.add_argument("--disable-extensions")
-        # options.add_experimental_option('useAutomationExtension', False)
+        options.add_argument('--headless=new')  # 'new'를 사용하여 새로운 headless 모드를 활성화
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument("--disable-extensions")
+        options.add_experimental_option('useAutomationExtension', False)
 
         # 브라우저 윈도우 사이즈
         options.add_argument('window-size=1920x1080')
