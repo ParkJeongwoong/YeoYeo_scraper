@@ -5,6 +5,7 @@ import bookingListExtractor
 from random import randint
 import datetime
 from enum import Enum
+import time
 
 from dotenv import load_dotenv
 import os
@@ -32,6 +33,11 @@ def randomSleep(dirver: driver.Driver):
     sleepTime = randint(15, 30)/10
     print(f'Random Sleep: {sleepTime}')
     dirver.wait(sleepTime)
+
+def randomRealSleep():
+    sleepTime = randint(15, 30)/5
+    print(f'Long Sleep: {sleepTime}')
+    time.sleep(sleepTime)
 
 def makeTargetDateList(dateListStr: str)->list:
     dateList = dateListStr.split(',')
@@ -61,6 +67,7 @@ def SyncNaver(targetDateStr: str, targetRoom: str):
     driver.goTo(simpleReservationManagementUrl)
     print('간단예약관리 페이지 이동')
     randomSleep(driver)
+    randomRealSleep()
 
     # 날짜 변경
     targetDateList = makeTargetDateList(targetDateStr)
@@ -100,9 +107,14 @@ def getNaverReservation(monthSize: int)-> tuple:
     # 예약자 정보 가져오기
     bookingList = []
     for i in range(monthSize):
-        bookingList += bookingListExtractor.extractBookingList(driver.getPageSource())
-        driver.findByXpath('//button[contains(@class, "DatePeriodCalendar__next")]').click()
+        print(f'{i+1}번째 월 예약자 정보 가져오기 시작')
         randomSleep(driver)
+        monthBookingList = bookingListExtractor.extractBookingList(driver.getPageSource())
+        print("length: ", len(monthBookingList))
+        print(monthBookingList)
+        bookingList.extend(monthBookingList)
+        driver.findByXpath('//button[contains(@class, "DatePeriodCalendar__next")]').click()
+        randomRealSleep()
     print(len(bookingList))
     print(bookingList)
     driver.close()

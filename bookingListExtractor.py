@@ -1,5 +1,4 @@
 from bs4 import BeautifulSoup as bs
-import re
 
 def extractBookingList(html: str) -> list:
     soup = bs(html, 'html.parser')
