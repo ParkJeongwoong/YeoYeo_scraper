@@ -120,7 +120,7 @@ def getNaverReservation(monthSize: int)-> tuple:
     bookingList = list({booking['reservationNumber']: booking for booking in bookingList}.values())
     # 체크인 날짜가 오늘 이후인 예약만 남기기
     kst = datetime.timezone(datetime.timedelta(hours=9), 'Asia/Seoul')
-    now = datetime.datetime.now().replace(tzinfo=kst)
+    now = datetime.datetime.now(datetime.timezone.utc).astimezone(kst)
     for booking in bookingList:
         start = datetime.datetime.strptime(booking['startDate'], '%Y%m%d').replace(tzinfo=kst)
         print(f'{start} {now} {start > now}')
