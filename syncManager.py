@@ -103,6 +103,7 @@ def getNaverReservation(monthSize: int)-> tuple:
     print('예약자관리 페이지 이동')
     randomSleep(driver)
     randomSleep(driver)
+    randomRealSleep()
 
     # 예약자 정보 가져오기
     bookingList = []
@@ -115,10 +116,13 @@ def getNaverReservation(monthSize: int)-> tuple:
         bookingList.extend(monthBookingList)
         driver.findByXpath('//button[contains(@class, "DatePeriodCalendar__next")]').click()
         randomRealSleep()
-    print(len(bookingList))
+    # bookingList에서 중복 제거
+    bookingList = list({booking['reservationNumber']: booking for booking in bookingList}.values())
+    print("취소 포함 총 예약 수 : ", len(bookingList))
+    # bookingList 개수 출력
     print(bookingList)
     driver.close()
     notCanceledBookingList = list(filter(lambda x: x['status'] != '취소', bookingList))
-    print(len(notCanceledBookingList))
+    print("취소 미포함 확정 예약 수 : ", len(notCanceledBookingList))
     print(notCanceledBookingList)
     return notCanceledBookingList, bookingList
