@@ -119,7 +119,8 @@ def getNaverReservation(monthSize: int)-> tuple:
     # bookingList에서 중복 제거
     bookingList = list({booking['reservationNumber']: booking for booking in bookingList}.values())
     # 체크인 날짜가 오늘 이후인 예약만 남기기
-    bookingList = list(filter(lambda x: datetime.datetime.strptime(x['startDate'], '%Y%m%d') > datetime.datetime.now(), bookingList))
+    now = datetime.datetime.now('Asia/Seoul')
+    bookingList = list(filter(lambda x: datetime.datetime.strptime(x['startDate'], '%Y%m%d') > now, bookingList))
     print("취소 포함 총 예약 수 : ", len(bookingList))
     print(bookingList)
     driver.close()
