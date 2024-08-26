@@ -6,7 +6,6 @@ from random import randint
 import datetime
 from enum import Enum
 import time
-from pytz import timezone
 
 from dotenv import load_dotenv
 import os
@@ -120,7 +119,8 @@ def getNaverReservation(monthSize: int)-> tuple:
     # bookingList에서 중복 제거
     bookingList = list({booking['reservationNumber']: booking for booking in bookingList}.values())
     # 체크인 날짜가 오늘 이후인 예약만 남기기
-    now = datetime.datetime.now(timezone('Asia/Seoul'))
+    kst = datetime.timezone(datetime.timedelta(hours=9), 'Asia/Seoul')
+    now = datetime.datetime.now(kst)
     bookingList = list(filter(lambda x: datetime.datetime.strptime(x['startDate'], '%Y%m%d') > now, bookingList))
     print("취소 포함 총 예약 수 : ", len(bookingList))
     print(bookingList)
