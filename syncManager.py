@@ -26,7 +26,7 @@ id = os.environ.get('ID')
 pw = os.environ.get('PASSWORD')
 
 # Temporary Variable
-# targetDateStr = '2024-09-02,2024-09-03'
+# targetDatesStr = '2024-09-02,2024-09-03'
 # targetRoom = RoomType.Yeohang
 
 def randomSleep(dirver: driver.Driver):

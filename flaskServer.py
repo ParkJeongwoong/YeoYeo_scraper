@@ -25,43 +25,61 @@ def hello_world_post():
 
 @app.route('/sync/in', methods=['POST'])
 def sync_naver_reservation():
-    req = request.get_json()
-    targetDateStr = req['targetDateStr']
-    targetRoom = req['targetRoom']
-    if checkActivationKey(req) == False:
+    try:
+        req = request.get_json()
+        # TODO : 마이그레이션 이후 targetDatesStr 삭제 예정
+        targetDatesStr = req['targetDateStr']
+        # targetDateStr에서 targetDatesStr로 마이그레이션
+        if req['targetDatesStr'] != None:
+            targetDatesStr = req['targetDatesStr']
+        targetRoom = req['targetRoom']
+        if checkActivationKey(req) == False:
+            res = {
+                'message': 'Invalid Access Key',
+                'data': req
+            }
+            return jsonify(res), 401
+        print(targetDatesStr, targetRoom)
+        syncManager.SyncNaver(targetDatesStr, targetRoom)
         res = {
-            'message': 'Invalid Access Key',
+            'message': 'Sync Naver Reservation',
             'data': req
         }
-        return jsonify(res), 401
-    print(targetDateStr, targetRoom)
-    syncManager.SyncNaver(targetDateStr, targetRoom)
-    res = {
-        'message': 'Sync Naver Reservation',
-        'data': req
-    }
-    return jsonify(res), 200
+        return jsonify(res), 200
+    except Exception as e:
+        res = {
+            'message': 'Sync Naver Reservation Failed',
+            'error': e
+        }
+        return jsonify(res), 500
 
 @app.route('/sync/out', methods=['POST'])
 def get_naver_reservation():
-    req = request.get_json()
-    if checkActivationKey(req) == False:
+    try:
+        req = request.get_json()
+        if checkActivationKey(req) == False:
+            res = {
+                'message': 'Invalid Access Key',
+                'data': {}
+            }
+            return jsonify(res), 401
+        monthSize = req['monthSize']
+        print("monthSize: ", monthSize)
+        if monthSize == None:
+            monthSize = 1
+        notCanceledBookingList, allBookingList = syncManager.getNaverReservation(monthSize)
         res = {
-            'message': 'Invalid Access Key',
-            'data': {}
+            'message': 'Sync Naver Reservation',
+            'notCanceledBookingList': notCanceledBookingList,
+            'allBookingList': allBookingList
         }
-        return jsonify(res), 401
-    monthSize = req['monthSize']
-    print("monthSize: ", monthSize)
-    if monthSize == None:
-        monthSize = 1
-    notCanceledBookingList, allBookingList = syncManager.getNaverReservation(monthSize)
-    res = {
-        'message': 'Sync Naver Reservation',
-        'notCanceledBookingList': notCanceledBookingList,
-        'allBookingList': allBookingList
-    }
-    return jsonify(res), 200
+        return jsonify(res), 200
+    except Exception as e:
+        res = {
+            'message': 'Get Naver Reservation Failed',
+            'error': e
+        }
+        return jsonify(res), 500
 
 def checkActivationKey(req):
     if 'activationKey' not in req:
