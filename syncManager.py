@@ -63,6 +63,7 @@ def SyncNaver(targetDateStr: str, targetRoom: str):
     driver.findBySelector('#log\.login').click()
     print('로그인 성공')
     randomSleep(driver)
+    randomRealSleep()
 
     driver.goTo(simpleReservationManagementUrl)
     print('간단예약관리 페이지 이동')
@@ -98,6 +99,7 @@ def getNaverReservation(monthSize: int)-> tuple:
     driver.findBySelector('#log\.login').click()
     print('로그인 성공')
     randomSleep(driver)
+    randomRealSleep()
 
     driver.goTo(bookingListUrl)
     print('예약자관리 페이지 이동')
