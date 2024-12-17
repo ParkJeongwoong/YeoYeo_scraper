@@ -35,6 +35,7 @@ def hello_world():
 def hello_world_post():
     req = request.get_json()
     res = {"message": "Hello, World!", "data": req}
+    log.info("테스트 - Hello, World!")
     return jsonify(res), 200
 
 
