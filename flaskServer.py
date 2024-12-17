@@ -16,11 +16,8 @@ activationKey = os.environ.get("ACTIVATION_KEY")
 if not os.path.isdir("logs"):
     os.mkdir("logs")
 
-logger = logging.getLogger()
+logger: logging.Logger = log.getLogger("logs/server.log")
 logger.setLevel(logging.INFO)
-logHandler = logging.FileHandler(filename="logs/server.log", encoding="utf-8")
-logHandler.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(message)s"))
-logger.addHandler(logHandler)
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
