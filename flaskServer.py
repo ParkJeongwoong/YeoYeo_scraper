@@ -1,15 +1,29 @@
+# -*- coding:utf-8 -*-
+
 from flask import Flask, jsonify, request
 import syncManager
 import chromeDriver
 
 from dotenv import load_dotenv
 import os
+import logging
+import log
 
 load_dotenv()
 
 activationKey = os.environ.get("ACTIVATION_KEY")
 
+if not os.path.isdir("logs"):
+    os.mkdir("logs")
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logHandler = logging.FileHandler(filename="logs/server.log", encoding="utf-8")
+logHandler.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(message)s"))
+logger.addHandler(logHandler)
+
 app = Flask(__name__)
+app.config["JSON_AS_ASCII"] = False
 
 
 @app.route("/", methods=["GET"])
@@ -41,12 +55,13 @@ def sync_naver_reservation():
         if checkActivationKey(req) == False:
             res = {"message": "Invalid Access Key", "data": req}
             return jsonify(res), 401
-        print(targetDatesStr, targetRoom)
+        log.info(f"targetDatesStr: {targetDatesStr}, targetRoom: {targetRoom}")
         syncManager.SyncNaver(targetDatesStr, targetRoom)
         res = {"message": "Sync Naver Reservation", "data": req}
         httpStatus = 200
     except Exception as e:
-        res = {"message": "Sync Naver Reservation Failed", "error": e}
+        log.error("네이버 예약 정보 변경 실패", e)
+        res = {"message": "Sync Naver Reservation Failed"}
         httpStatus = 500
 
     driver.close()
@@ -65,7 +80,7 @@ def get_naver_reservation():
             res = {"message": "Invalid Access Key", "data": {}}
             return jsonify(res), 401
         monthSize = req["monthSize"]
-        print("monthSize: ", monthSize)
+        log.info(f"monthSize: {monthSize}")
         if monthSize == None:
             monthSize = 1
         notCanceledBookingList, allBookingList = syncManager.getNaverReservation(
@@ -78,7 +93,8 @@ def get_naver_reservation():
         }
         httpStatus = 200
     except Exception as e:
-        res = {"message": "Get Naver Reservation Failed", "error": e}
+        log.error("네이버 예약 정보 가져오기 실패", e)
+        res = {"message": "Get Naver Reservation Failed"}
         httpStatus = 500
 
     driver.close()
