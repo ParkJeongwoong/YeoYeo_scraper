@@ -130,7 +130,7 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
         btn = driver.findByXpath(
             '//button[contains(@class, "DatePeriodCalendar__next")]'
         )
-        driver.executeScript(f"{btn}.click()")
+        driver.executeScript("arguments[0].click();", btn)
         randomRealSleep()
     # bookingList에서 중복 제거
     bookingList = list(
