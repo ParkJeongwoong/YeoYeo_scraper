@@ -38,9 +38,10 @@ class SimpleManagementController:
             return diff.days
         else:
             log.info("Target 범위에 존재하지 않음")
-            driver.findByXpath(
+            btn = driver.findByXpath(
                 '//button[contains(@class, "DatePeriodCalendar__next")]'
-            ).click()
+            )
+            driver.execute_script("arguments[0].click();", btn)
             return -1
 
     def parseDateInfo(self, dateInfoData: str) -> datetime.date:
