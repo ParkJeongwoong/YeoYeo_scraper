@@ -44,7 +44,7 @@ class Driver(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def executeScript(self):
+    def executeScript(self, script):
         pass
 
     @abstractmethod
