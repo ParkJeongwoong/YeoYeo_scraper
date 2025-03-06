@@ -135,4 +135,4 @@ class ChromeDriver(driver.Driver):
         self.driver.implicitly_wait(seconds)
 
     def executeScript(self, script, *args):
-        return self.driver.execute_script(script, args)
+        return self.driver.execute_script(script, *args)
