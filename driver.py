@@ -44,6 +44,10 @@ class Driver(metaclass=ABCMeta):
         pass
 
     @abstractmethod
+    def executeScript(self):
+        pass
+
+    @abstractmethod
     def findChildElementsByXpath(self):
         pass
 
