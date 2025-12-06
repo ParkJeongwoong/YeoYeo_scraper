@@ -25,6 +25,7 @@ app.config["JSON_AS_ASCII"] = False
 
 @app.route("/", methods=["GET"])
 def hello_world():
+    log.info("Hello, World!")
     return "Hello, World!"
 
 
@@ -44,7 +45,7 @@ def sync_naver_reservation():
 
     try:
         req = request.get_json()
-        # TODO : 마이그레이션 이후 targetDatesStr 삭제 예정
+        # TODO : 마이그레이션 이후 targetDateStr 삭제 예정
         targetDatesStr = req["targetDateStr"]
         # targetDateStr에서 targetDatesStr로 마이그레이션
         if req["targetDatesStr"] != None:
@@ -54,7 +55,7 @@ def sync_naver_reservation():
             res = {"message": "Invalid Access Key", "data": req}
             return jsonify(res), 401
         log.info(f"targetDatesStr: {targetDatesStr}, targetRoom: {targetRoom}")
-        syncManager.SyncNaver(targetDatesStr, targetRoom)
+        syncManager.SyncNaver(driver, targetDatesStr, targetRoom)
         res = {"message": "Sync Naver Reservation", "data": req}
         httpStatus = 200
     except Exception as e:

@@ -92,7 +92,8 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str):
 
         # 예약 상태 변경
         log.info(f"{targetDate} 예약 변경 시작")
-        reservationManager.findTargetBtn(driver, idxOfDate, targetRoom.value).click()
+        targetBtn = reservationManager.findTargetBtn(driver, idxOfDate, targetRoom.value)
+        driver.executeScript("arguments[0].click();", targetBtn)
 
         randomSleep(driver)
         log.info(f"{targetDate}, {targetRoom.name}, 예약 변경 완료")

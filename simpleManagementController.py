@@ -69,5 +69,5 @@ class SimpleManagementController:
         )
         log.info(f"reservationList length: {len(reservationList)}")
         targetDiv = driver.findChildElement(reservationList[idxOfDate], "div")
-        targetButton = driver.findChildElement(targetDiv, "input")
+        targetButton = driver.findChildElement(targetDiv, "label")
         return targetButton

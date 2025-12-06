@@ -4,8 +4,12 @@ import logging
 def getLogger(path: str) -> logging.Logger:
     logger = logging.getLogger()
     logHandler = logging.FileHandler(filename=path, encoding="utf-8")
-    logHandler.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(message)s"))
+    streamHandler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s:%(levelname)s:%(message)s")
+    logHandler.setFormatter(formatter)
+    streamHandler.setFormatter(formatter)
     logger.addHandler(logHandler)
+    logger.addHandler(streamHandler)
     return logger
 
 
