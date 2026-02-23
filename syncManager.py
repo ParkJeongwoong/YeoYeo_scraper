@@ -59,8 +59,9 @@ def makeTargetDate(dateStr: str) -> datetime.date:
     return datetime.date(int(dateList[0]), int(dateList[1]), int(dateList[2]))
 
 
-def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str):
+def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> list:
     targetRoom = RoomType[targetRoom]
+    successDates = []
 
     reservationManager = simpleManagementController.SimpleManagementController()
     driver.goTo(naverLoginUrl)
@@ -87,8 +88,7 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str):
         if idxOfDate == -1:
             log.info("해당 날짜가 존재하지 않습니다.")
             log.info(f"{targetDate} 예약 변경 종료")
-            driver.close()
-            return
+            continue
 
         # 예약 상태 변경
         log.info(f"{targetDate} 예약 변경 시작")
@@ -96,8 +96,10 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str):
         driver.executeScript("arguments[0].click();", targetBtn)
 
         randomSleep(driver)
+        successDates.append(str(targetDate))
         log.info(f"{targetDate}, {targetRoom.name}, 예약 변경 완료")
-    driver.close()
+    
+    return successDates
 
 
 def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:

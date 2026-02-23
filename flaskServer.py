@@ -45,9 +45,6 @@ def sync_naver_reservation():
 
     try:
         req = request.get_json()
-        # TODO : 마이그레이션 이후 targetDateStr 삭제 예정
-        targetDatesStr = req["targetDateStr"]
-        # targetDateStr에서 targetDatesStr로 마이그레이션
         if req["targetDatesStr"] != None:
             targetDatesStr = req["targetDatesStr"]
         targetRoom = req["targetRoom"]
@@ -55,8 +52,8 @@ def sync_naver_reservation():
             res = {"message": "Invalid Access Key", "data": req}
             return jsonify(res), 401
         log.info(f"targetDatesStr: {targetDatesStr}, targetRoom: {targetRoom}")
-        syncManager.SyncNaver(driver, targetDatesStr, targetRoom)
-        res = {"message": "Sync Naver Reservation", "data": req}
+        successDates = syncManager.SyncNaver(driver, targetDatesStr, targetRoom)
+        res = {"message": "Sync Naver Reservation", "successDates": successDates, "data": req}
         httpStatus = 200
     except Exception as e:
         log.error("네이버 예약 정보 변경 실패", e)
