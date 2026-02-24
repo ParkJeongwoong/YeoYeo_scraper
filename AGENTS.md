@@ -3,8 +3,9 @@
 ## 프로젝트 개요
 네이버 예약 관리 시스템 자동화 스크래퍼 (Flask 기반 REST API)
 - **목적**: 네이버 비즈니스 예약 관리 자동화 (예약 정보 동기화, 조회)
-- **주요 기술**: Flask, Selenium, BeautifulSoup4
+- **주요 기술**: Flask, Flask-RESTX, Selenium, BeautifulSoup4
 - **실행 방법**: `.\.venv_flask\Scripts\python.exe flaskServer.py`
+- **Swagger UI**: 서버 실행 후 `http://localhost:5000/docs` 접속
 
 ---
 
@@ -12,9 +13,11 @@
 
 ### 1. **flaskServer.py** - API 서버 엔트리포인트
 **역할**:
-- Flask 웹 서버 실행 및 라우팅
-- API 엔드포인트 관리
+- Flask-RESTX 웹 서버 실행 및 라우팅
+- API 엔드포인트 관리 (Resource 클래스 기반)
+- Swagger UI 자동 생성 (/docs)
 - 인증키(activationKey) 검증
+- Request/Response 모델 정의 및 검증
 - 로깅 설정
 
 **주요 엔드포인트**:
@@ -23,32 +26,68 @@
 - `POST /sync/in` - 네이버 예약 상태 변경 (특정 날짜/방 예약 가능 → 불가능 토글)
 - `POST /sync/out` - 네이버 예약 정보 조회 (N개월치 예약 내역 가져오기)
 
+**Flask-RESTX 구조**:
+- **Resource 클래스 기반**: 각 엔드포인트는 Resource 클래스로 구현
+- **모델 정의**: `api.model()`로 Request/Response 스키마 정의
+- **자동 검증**: `@ns.expect(model, validate=True)`로 입력 자동 검증
+- **Swagger UI**: 자동으로 API 문서 생성 및 테스트 가능
+
+**모델 정의 방법**:
+- Request 모델: 필수/선택 필드, 타입, 설명, 기본값 명시
+- Response 모델: 각 HTTP 상태코드별 응답 구조 정의
+- Nested 모델: 복잡한 객체는 별도 모델로 정의 후 `fields.Nested()` 사용
+- 필드 타입: `fields.String`, `fields.Integer`, `fields.List`, `fields.Raw` 등
+
 **수정 시 주의사항**:
-- 새로운 API 엔드포인트 추가 시 `@app.route()` 데코레이터 사용
+- 새로운 API 엔드포인트 추가 시 Resource 클래스로 구현
+- Request/Response 모델을 먼저 정의 후 `@ns.expect()`, `@ns.response()` 데코레이터 사용
 - 모든 요청에 `activationKey` 검증 필요한 경우 `checkActivationKey()` 호출
 - ChromeDriver 인스턴스는 반드시 `driver.close()`로 종료
 - 에러 핸들링 시 적절한 HTTP 상태 코드 반환 (200, 401, 500 등)
+- `validate=True` 옵션으로 Request 자동 검증 활성화
+- Swagger UI에서 API 문서 자동 생성되므로 모델 정의가 중요
 
 **수정 방법**:
 ```python
-# 새로운 엔드포인트 추가 예시
-@app.route("/new-endpoint", methods=["POST"])
-def new_endpoint():
-    driver = chromeDriver.ChromeDriver()
-    try:
-        req = request.get_json()
-        if not checkActivationKey(req):
-            return jsonify({"message": "Invalid Access Key"}), 401
-        
-        # 비즈니스 로직 구현
-        result = your_function(driver, req["param"])
-        
-        return jsonify({"message": "Success", "data": result}), 200
-    except Exception as e:
-        log.error("에러 메시지", e)
-        return jsonify({"message": "Failed"}), 500
-    finally:
-        driver.close()
+# 1. Request/Response 모델 정의
+new_request_model = api.model('NewRequest', {
+    'activationKey': fields.String(required=True, description='인증 키'),
+    'param': fields.String(required=True, description='파라미터')
+})
+
+new_success_response_model = api.model('NewSuccessResponse', {
+    'message': fields.String(description='응답 메시지'),
+    'data': fields.Raw(description='결과 데이터')
+})
+
+new_error_response_model = api.model('NewErrorResponse', {
+    'message': fields.String(description='에러 메시지')
+})
+
+# 2. Resource 클래스로 엔드포인트 구현
+@ns.route('/new-endpoint')
+class NewEndpoint(Resource):
+    @ns.expect(new_request_model, validate=True)
+    @ns.response(200, 'Success', new_success_response_model)
+    @ns.response(401, 'Unauthorized', new_error_response_model)
+    @ns.response(500, 'Internal Server Error', new_error_response_model)
+    def post(self):
+        """새로운 엔드포인트 설명"""
+        driver = chromeDriver.ChromeDriver()
+        try:
+            req = request.get_json()
+            if not checkActivationKey(req):
+                return {"message": "Invalid Access Key"}, 401
+            
+            # 비즈니스 로직 구현
+            result = your_function(driver, req["param"])
+            
+            return {"message": "Success", "data": result}, 200
+        except Exception as e:
+            log.error("에러 메시지", e)
+            return {"message": "Failed"}, 500
+        finally:
+            driver.close()
 ```
 
 ---
