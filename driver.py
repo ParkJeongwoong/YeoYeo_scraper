@@ -58,3 +58,27 @@ class Driver(metaclass=ABCMeta):
     @abstractmethod
     def wait(self):
         pass
+
+    @abstractmethod
+    def waitForDocumentReady(self):
+        pass
+
+    @abstractmethod
+    def waitForAnySelector(self):
+        pass
+
+    @abstractmethod
+    def getCurrentUrl(self):
+        pass
+
+    @abstractmethod
+    def getTitle(self):
+        pass
+
+    @abstractmethod
+    def saveScreenshot(self):
+        pass
+
+    @abstractmethod
+    def getBrowserInfo(self):
+        pass

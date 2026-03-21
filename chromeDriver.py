@@ -1,4 +1,6 @@
 import driver
+import time
+import selenium
 from selenium import webdriver
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -18,6 +20,7 @@ class ChromeDriver(driver.Driver):
     def __init__(self):
         self.options = self.getOptions()
         self.driver = self.getDriver(self.options)
+        self.driver.implicitly_wait(0)
 
     def getOptions(self) -> Options:
         options = Options()
@@ -132,7 +135,54 @@ class ChromeDriver(driver.Driver):
         return element.find_element(By.TAG_NAME, selector)
 
     def wait(self, seconds):
-        self.driver.implicitly_wait(seconds)
+        time.sleep(seconds)
+
+    def waitForDocumentReady(self, timeout=10):
+        return WebDriverWait(self.driver, timeout).until(
+            lambda current_driver: current_driver.execute_script(
+                "return document.readyState"
+            )
+            == "complete"
+        )
+
+    def waitForAnySelector(self, selectors, timeout=10):
+        def find_matching_selector(current_driver):
+            for selector in selectors:
+                elements = current_driver.find_elements(By.CSS_SELECTOR, selector)
+                if len(elements) > 0:
+                    return {
+                        "selector": selector,
+                        "count": len(elements),
+                    }
+            return False
+
+        return WebDriverWait(self.driver, timeout).until(find_matching_selector)
+
+    def getCurrentUrl(self):
+        return self.driver.current_url
+
+    def getTitle(self):
+        return self.driver.title
+
+    def saveScreenshot(self, path):
+        return self.driver.save_screenshot(path)
+
+    def getBrowserInfo(self):
+        capabilities = self.driver.capabilities
+        chrome_info = capabilities.get("chrome", {})
+        chromedriver_version = chrome_info.get("chromedriverVersion", "")
+        if chromedriver_version:
+            chromedriver_version = chromedriver_version.split(" ")[0]
+        return {
+            "browserName": capabilities.get("browserName"),
+            "browserVersion": capabilities.get("browserVersion"),
+            "chromedriverVersion": chromedriver_version,
+            "platformName": capabilities.get("platformName"),
+            "seleniumVersion": selenium.__version__,
+            "headless": any(
+                argument.startswith("--headless") for argument in self.options.arguments
+            ),
+        }
 
     def executeScript(self, script, *args):
         return self.driver.execute_script(script, *args)

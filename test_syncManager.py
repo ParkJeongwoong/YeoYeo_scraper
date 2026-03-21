@@ -195,6 +195,7 @@ class TestGetNaverReservation:
         mock_driver.findBySelector.return_value.click = MagicMock()
         mock_driver.getPageSource.return_value = "<html></html>"
         mock_driver.findByXpath.return_value = MagicMock()
+        mock_driver.getBrowserInfo.return_value = {}
 
         future_date = datetime.datetime.now(
             datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
@@ -216,6 +217,7 @@ class TestGetNaverReservation:
         assert len(not_canceled) == 1
         assert len(all_bookings) == 1
         assert not_canceled[0]["reservationNumber"] == "12345"
+        mock_driver.findByXpath.assert_not_called()
 
     @patch("syncManager.id", "test_id")
     @patch("syncManager.pw", "test_pw")
@@ -229,6 +231,7 @@ class TestGetNaverReservation:
         mock_driver.findBySelector.return_value.click = MagicMock()
         mock_driver.getPageSource.return_value = "<html></html>"
         mock_driver.findByXpath.return_value = MagicMock()
+        mock_driver.getBrowserInfo.return_value = {}
 
         future_date = datetime.datetime.now(
             datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
@@ -262,6 +265,7 @@ class TestGetNaverReservation:
         mock_driver.findBySelector.return_value.click = MagicMock()
         mock_driver.getPageSource.return_value = "<html></html>"
         mock_driver.findByXpath.return_value = MagicMock()
+        mock_driver.getBrowserInfo.return_value = {}
 
         future_date = datetime.datetime.now(
             datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
@@ -300,6 +304,7 @@ class TestGetNaverReservation:
         mock_driver.findBySelector.return_value.click = MagicMock()
         mock_driver.getPageSource.return_value = "<html></html>"
         mock_driver.findByXpath.return_value = MagicMock()
+        mock_driver.getBrowserInfo.return_value = {}
 
         future_date = datetime.datetime.now(
             datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
@@ -348,6 +353,7 @@ class TestGetNaverReservation:
         mock_driver.findBySelector.return_value.click = MagicMock()
         mock_driver.getPageSource.return_value = "<html></html>"
         mock_driver.findByXpath.return_value = MagicMock()
+        mock_driver.getBrowserInfo.return_value = {}
 
         kst = datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
         now = datetime.datetime.now(datetime.timezone.utc).astimezone(kst)
@@ -373,6 +379,48 @@ class TestGetNaverReservation:
         not_canceled, all_bookings = result
         assert len(all_bookings) == 1
         assert all_bookings[0]["reservationNumber"] == "67890"
+
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    @patch("syncManager.collectPageDiagnostics")
+    @patch("syncManager.waitForBookingListDom")
+    @patch("syncManager.bookingListExtractor.extractBookingList")
+    def test_get_naver_reservation_collects_diagnostics_when_dom_is_empty(
+        self,
+        mock_extract,
+        mock_wait_for_booking_list,
+        mock_collect_diagnostics,
+        mock_real_sleep,
+        mock_sleep,
+    ):
+        mock_driver = MagicMock()
+        mock_driver.findBySelector.return_value.click = MagicMock()
+        mock_driver.getPageSource.return_value = "<html></html>"
+        mock_driver.getBrowserInfo.return_value = {}
+        mock_extract.return_value = []
+        mock_collect_diagnostics.side_effect = [
+            {"selectorCounts": {"calendarNextButton": 0}},
+            {"selectorCounts": {"calendarNextButton": 0}},
+            {"selectorCounts": {"calendarNextButton": 0}},
+            {"selectorCounts": {"calendarNextButton": 0}},
+            {"selectorCounts": {"calendarNextButton": 0}},
+        ]
+
+        not_canceled, all_bookings = getNaverReservation(mock_driver, 2)
+
+        assert not_canceled == []
+        assert all_bookings == []
+        stages = [call.args[1] for call in mock_collect_diagnostics.call_args_list]
+        assert "after_login" in stages
+        assert "booking_list_loaded" in stages
+        assert "booking_list_month_1" in stages
+        assert "booking_list_month_1_empty" in stages
+        assert "booking_list_month_1_next_missing" in stages
+        wait_stages = [call.args[2] for call in mock_wait_for_booking_list.call_args_list]
+        assert "booking_list_initial" in wait_stages
+        assert "booking_list_month_1" in wait_stages
 
 
 class TestRoomType:

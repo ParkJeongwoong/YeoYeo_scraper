@@ -18,6 +18,15 @@ def valid_activation_key():
 
 
 class TestHealthCheck:
+    def test_debug_view_page(self, client):
+        response = client.get('/debug/view')
+
+        assert response.status_code == 200
+        assert b"DOM Diagnostics Viewer" in response.data
+        assert b"\xec\x84\xa0\xed\x83\x9d \xec\x84\xb8\xec\x85\x98 \xec\x82\xad\xec\xa0\x9c" in response.data
+        assert b"\xeb\xac\xb8\xec\xa0\x9c \xec\x84\xb8\xec\x85\x98 \xec\x82\xad\xec\xa0\x9c" in response.data
+        assert b"\xec\xa0\x84\xec\xb2\xb4 \xec\x84\xb8\xec\x85\x98 \xec\x82\xad\xec\xa0\x9c" in response.data
+
     def test_post_health_check(self, client):
         test_data = {"data": "test"}
         response = client.post(
@@ -43,6 +52,197 @@ class TestCheckActivationKey:
     def test_missing_activation_key(self):
         req = {}
         assert checkActivationKey(req) == False
+
+
+class TestDiagnosticEndpoints:
+    def test_list_diagnostic_sessions(self, client, valid_activation_key, tmp_path, monkeypatch):
+        ok_session_dir = tmp_path / "20260321_090000_000001"
+        ok_session_dir.mkdir(parents=True)
+        (ok_session_dir / "booking_list_loaded.json").write_text(
+            json.dumps({
+                "currentUrl": "https://partner.booking.naver.com/example",
+                "title": "예약자관리",
+                "userAgent": "Mozilla/5.0 Test",
+                "selectorCounts": {
+                    "bookingCards": 2,
+                    "calendarDateInfo": 1,
+                    "calendarNextButton": 1
+                },
+                "detectedKeywords": []
+            }),
+            encoding="utf-8"
+        )
+        (ok_session_dir / "booking_list_loaded.html").write_text("<html></html>", encoding="utf-8")
+
+        protected_session_dir = tmp_path / "20260321_100000_000002"
+        protected_session_dir.mkdir(parents=True)
+        (protected_session_dir / "booking_list_month_1_empty.json").write_text(
+            json.dumps({
+                "selectorCounts": {
+                    "bookingCards": 0,
+                    "calendarDateInfo": 0,
+                    "calendarNextButton": 0
+                },
+                "detectedKeywords": ["로그인", "보안"]
+            }),
+            encoding="utf-8"
+        )
+        (protected_session_dir / "booking_list_month_1_empty.png").write_text("png", encoding="utf-8")
+
+        monkeypatch.setattr("flaskServer.domDiagnosticDir", str(tmp_path))
+
+        response = client.get(
+            f'/debug/diagnostics?activationKey={valid_activation_key}'
+        )
+
+        assert response.status_code == 200
+        result = response.get_json()
+        assert result["message"] == "Diagnostic Sessions"
+        assert len(result["sessions"]) == 2
+        assert result["sessions"][0]["sessionId"] == "20260321_100000_000002"
+        assert result["sessions"][0]["status"]["code"] == "protected"
+        assert result["sessions"][0]["status"]["suspicious"] is True
+        assert result["sessions"][0]["defaultFileUrl"].endswith(".png")
+        assert result["sessions"][0]["currentUrl"] is None
+        assert result["sessions"][0]["title"] is None
+        assert result["sessions"][0]["userAgent"] is None
+        file_names = [file["name"] for file in result["sessions"][1]["files"]]
+        assert "booking_list_loaded.json" in file_names
+        assert "booking_list_loaded.html" in file_names
+        assert result["sessions"][1]["files"][0]["url"].startswith("/debug/diagnostics/")
+        assert result["sessions"][1]["currentUrl"] == "https://partner.booking.naver.com/example"
+        assert result["sessions"][1]["title"] == "예약자관리"
+        assert result["sessions"][1]["userAgent"] == "Mozilla/5.0 Test"
+
+    def test_delete_diagnostic_session(self, client, valid_activation_key, tmp_path, monkeypatch):
+        session_dir = tmp_path / "20260321_090000_000001"
+        session_dir.mkdir(parents=True)
+        (session_dir / "booking_list_loaded.json").write_text('{"ok": true}', encoding="utf-8")
+
+        monkeypatch.setattr("flaskServer.domDiagnosticDir", str(tmp_path))
+
+        response = client.delete(
+            '/debug/diagnostics/20260321_090000_000001',
+            headers={"X-Activation-Key": valid_activation_key},
+        )
+
+        assert response.status_code == 200
+        result = response.get_json()
+        assert result["message"] == "Diagnostic Session Deleted"
+        assert result["sessionId"] == "20260321_090000_000001"
+        assert not session_dir.exists()
+
+    def test_delete_all_diagnostic_sessions(self, client, valid_activation_key, tmp_path, monkeypatch):
+        for session_id in ["20260321_090000_000001", "20260321_100000_000002"]:
+            session_dir = tmp_path / session_id
+            session_dir.mkdir(parents=True)
+            (session_dir / "booking_list_loaded.json").write_text('{"ok": true}', encoding="utf-8")
+
+        monkeypatch.setattr("flaskServer.domDiagnosticDir", str(tmp_path))
+
+        response = client.delete(
+            '/debug/diagnostics?mode=all',
+            headers={"X-Activation-Key": valid_activation_key},
+        )
+
+        assert response.status_code == 200
+        result = response.get_json()
+        assert result["message"] == "Diagnostic Sessions Deleted"
+        assert result["mode"] == "all"
+        assert set(result["deletedSessionIds"]) == {"20260321_090000_000001", "20260321_100000_000002"}
+        assert not any(tmp_path.iterdir())
+
+    def test_delete_suspicious_diagnostic_sessions(self, client, valid_activation_key, tmp_path, monkeypatch):
+        ok_session_dir = tmp_path / "20260321_090000_000001"
+        ok_session_dir.mkdir(parents=True)
+        (ok_session_dir / "booking_list_loaded.json").write_text(
+            json.dumps({
+                "selectorCounts": {
+                    "bookingCards": 1,
+                    "calendarDateInfo": 1,
+                    "calendarNextButton": 1
+                },
+                "detectedKeywords": []
+            }),
+            encoding="utf-8"
+        )
+
+        protected_session_dir = tmp_path / "20260321_100000_000002"
+        protected_session_dir.mkdir(parents=True)
+        (protected_session_dir / "booking_list_month_1_empty.json").write_text(
+            json.dumps({
+                "selectorCounts": {
+                    "bookingCards": 0,
+                    "calendarDateInfo": 0,
+                    "calendarNextButton": 0
+                },
+                "detectedKeywords": ["로그인"]
+            }),
+            encoding="utf-8"
+        )
+
+        monkeypatch.setattr("flaskServer.domDiagnosticDir", str(tmp_path))
+
+        response = client.delete(
+            '/debug/diagnostics?mode=suspicious',
+            headers={"X-Activation-Key": valid_activation_key},
+        )
+
+        assert response.status_code == 200
+        result = response.get_json()
+        assert result["mode"] == "suspicious"
+        assert result["deletedSessionIds"] == ["20260321_100000_000002"]
+        assert ok_session_dir.exists()
+        assert not protected_session_dir.exists()
+
+    def test_list_diagnostic_sessions_requires_activation_key(self, client):
+        response = client.get('/debug/diagnostics?activationKey=wrong_key')
+
+        assert response.status_code == 401
+        result = response.get_json()
+        assert result["message"] == "Invalid Access Key"
+
+    def test_get_diagnostic_file(self, client, valid_activation_key, tmp_path, monkeypatch):
+        session_dir = tmp_path / "20260321_090000_000001"
+        session_dir.mkdir(parents=True)
+        file_path = session_dir / "booking_list_loaded.html"
+        file_path.write_text("<html><body>ok</body></html>", encoding="utf-8")
+
+        monkeypatch.setattr("flaskServer.domDiagnosticDir", str(tmp_path))
+
+        response = client.get(
+            f'/debug/diagnostics/20260321_090000_000001/booking_list_loaded.html?activationKey={valid_activation_key}'
+        )
+
+        assert response.status_code == 200
+        assert b"ok" in response.data
+
+    def test_get_diagnostic_file_with_header_key(self, client, valid_activation_key, tmp_path, monkeypatch):
+        session_dir = tmp_path / "20260321_090000_000001"
+        session_dir.mkdir(parents=True)
+        file_path = session_dir / "booking_list_loaded.json"
+        file_path.write_text('{"ok": true}', encoding="utf-8")
+
+        monkeypatch.setattr("flaskServer.domDiagnosticDir", str(tmp_path))
+
+        response = client.get(
+            '/debug/diagnostics/20260321_090000_000001/booking_list_loaded.json',
+            headers={"X-Activation-Key": valid_activation_key},
+        )
+
+        assert response.status_code == 200
+        assert b'"ok": true' in response.data
+
+    def test_get_diagnostic_file_blocks_path_traversal(self, client, valid_activation_key, tmp_path, monkeypatch):
+        session_dir = tmp_path / "20260321_090000_000001"
+        session_dir.mkdir(parents=True)
+        monkeypatch.setattr("flaskServer.domDiagnosticDir", str(tmp_path))
+
+        response = client.get(
+            f'/debug/diagnostics/20260321_090000_000001/../secret.txt?activationKey={valid_activation_key}'
+        )
+
+        assert response.status_code == 404
 
 
 class TestSyncNaverReservation:

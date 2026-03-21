@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DOM Diagnostics Viewer</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --panel: #fffdf8;
+      --line: #d8cfbe;
+      --text: #1e1a16;
+      --muted: #6f665a;
+      --accent: #1f5f5b;
+      --accent-weak: #d8ebe7;
+      --danger: #9b2c2c;
+      --shadow: 0 20px 50px rgba(37, 30, 20, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Noto Sans KR", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(31, 95, 91, 0.12), transparent 30%),
+        linear-gradient(180deg, #f8f3ea 0%, #f0ebe1 100%);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 32px 20px 40px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 48px);
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .auth {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+    }
+
+    .auth label {
+      font-size: 13px;
+      color: var(--muted);
+      width: 100%;
+    }
+
+    .auth input {
+      flex: 1 1 280px;
+      min-width: 220px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: #fff;
+      font-size: 15px;
+    }
+
+    .auth button,
+    .file-actions a {
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      padding: 12px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 14px;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .auth button.danger {
+      background: var(--danger);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 20px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.55);
+    }
+
+    .panel-header h2,
+    .panel-header h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .panel-header p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .sessions {
+      max-height: 70vh;
+      overflow: auto;
+      padding: 10px;
+    }
+
+    .session-card,
+    .file-item {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+    }
+
+    .session-card + .session-card {
+      margin-top: 12px;
+    }
+
+    .session-button,
+    .file-button {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      padding: 14px;
+      cursor: pointer;
+      color: inherit;
+    }
+
+    .session-button strong,
+    .file-button strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .session-button span,
+    .file-button span {
+      display: block;
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .session-meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .session-summary {
+      margin-top: 8px;
+      display: grid;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .badge.ok {
+      background: #dff2e4;
+      color: #205b2d;
+    }
+
+    .badge.warning {
+      background: #fff0cc;
+      color: #7a5600;
+    }
+
+    .badge.danger {
+      background: #f7d8d8;
+      color: #8b2323;
+    }
+
+    .session-card.active,
+    .file-item.active {
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+      background: var(--accent-weak);
+    }
+
+    .file-list {
+      display: grid;
+      gap: 10px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .viewer {
+      padding: 18px;
+      min-height: 70vh;
+      display: grid;
+      gap: 14px;
+    }
+
+    .viewer-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .file-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .empty,
+    .error {
+      padding: 24px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.8);
+      border: 1px dashed var(--line);
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .error {
+      color: var(--danger);
+      border-style: solid;
+      border-color: rgba(155, 44, 44, 0.2);
+      background: rgba(155, 44, 44, 0.06);
+    }
+
+    pre {
+      margin: 0;
+      padding: 18px;
+      border-radius: 16px;
+      background: #161412;
+      color: #f3efe8;
+      overflow: auto;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    iframe {
+      width: 100%;
+      min-height: 720px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fff;
+    }
+
+    .image-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      background: #efe8dc;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      overflow: auto;
+    }
+
+    .image-wrap img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+    }
+
+    @media (max-width: 960px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .sessions {
+        max-height: none;
+      }
+
+      .viewer {
+        min-height: auto;
+      }
+
+      iframe {
+        min-height: 520px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <h1>DOM Diagnostics Viewer</h1>
+      <p>EC2 서버에 저장된 HTML, JSON, PNG 진단 파일을 한 화면에서 확인합니다.</p>
+    </section>
+
+    <section class="auth">
+      <label for="activationKey">Activation Key</label>
+      <input id="activationKey" type="password" autocomplete="current-password" placeholder="activationKey 입력">
+      <button id="loadButton" type="button">세션 불러오기</button>
+      <button id="deleteButton" class="danger" type="button">선택 세션 삭제</button>
+      <button id="deleteSuspiciousButton" class="danger" type="button">문제 세션 삭제</button>
+      <button id="deleteAllButton" class="danger" type="button">전체 세션 삭제</button>
+    </section>
+
+    <div id="feedback"></div>
+
+    <section class="layout">
+      <aside class="panel">
+        <div class="panel-header">
+          <h2>세션 목록</h2>
+          <p>가장 최근 세션부터 표시합니다.</p>
+        </div>
+        <div id="sessionList" class="sessions">
+          <div class="empty">activationKey를 입력하고 세션을 불러오세요.</div>
+        </div>
+      </aside>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h3 id="viewerTitle">파일 미리보기</h3>
+          <p id="viewerSubtitle">세션과 파일을 선택하면 여기서 바로 확인할 수 있습니다.</p>
+        </div>
+        <div id="fileList" class="file-list">
+          <div class="empty">선택된 세션이 없습니다.</div>
+        </div>
+        <div id="viewer" class="viewer">
+          <div class="empty">파일을 선택하세요.</div>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      activationKey: "",
+      sessions: [],
+      selectedSessionId: null,
+      selectedFile: null,
+    };
+
+    const activationKeyInput = document.getElementById("activationKey");
+    const loadButton = document.getElementById("loadButton");
+    const deleteButton = document.getElementById("deleteButton");
+    const deleteSuspiciousButton = document.getElementById("deleteSuspiciousButton");
+    const deleteAllButton = document.getElementById("deleteAllButton");
+    const feedback = document.getElementById("feedback");
+    const sessionList = document.getElementById("sessionList");
+    const fileList = document.getElementById("fileList");
+    const viewer = document.getElementById("viewer");
+    const viewerTitle = document.getElementById("viewerTitle");
+    const viewerSubtitle = document.getElementById("viewerSubtitle");
+
+    function setFeedback(message, isError = false) {
+      if (!message) {
+        feedback.innerHTML = "";
+        return;
+      }
+
+      feedback.innerHTML = `<div class="${isError ? "error" : "empty"}">${message}</div>`;
+    }
+
+    function formatBytes(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function getSelectedSession() {
+      return state.sessions.find((session) => session.sessionId === state.selectedSessionId) || null;
+    }
+
+    function getDefaultSession(sessions) {
+      return sessions.find((session) => session.status && session.status.suspicious) || sessions[0] || null;
+    }
+
+    function getDefaultFile(session) {
+      if (!session) {
+        return null;
+      }
+      if (session.defaultFileUrl) {
+        return session.files.find((file) => file.url === session.defaultFileUrl) || session.files[0] || null;
+      }
+      return session.files[0] || null;
+    }
+
+    function getStatusTone(status) {
+      if (!status || status.code === "ok") {
+        return "ok";
+      }
+      if (status.code === "protected") {
+        return "danger";
+      }
+      return "warning";
+    }
+
+    function shortenUserAgent(userAgent) {
+      if (!userAgent) {
+        return "-";
+      }
+      return userAgent.length > 72 ? `${userAgent.slice(0, 72)}...` : userAgent;
+    }
+
+    function authHeaders() {
+      return {
+        "X-Activation-Key": state.activationKey,
+      };
+    }
+
+    function renderSessions() {
+      if (state.sessions.length === 0) {
+        sessionList.innerHTML = '<div class="empty">진단 세션이 없습니다.</div>';
+        return;
+      }
+
+      sessionList.innerHTML = state.sessions.map((session) => `
+        <div class="session-card ${session.sessionId === state.selectedSessionId ? "active" : ""}">
+          <button class="session-button" type="button" data-session-id="${session.sessionId}">
+            <strong>${session.sessionId}</strong>
+            <div class="session-meta">
+              <span class="badge ${getStatusTone(session.status)}">${session.status ? session.status.label : "상태 없음"}</span>
+              <span>${session.updatedAt ? new Date(session.updatedAt).toLocaleString() : ""}</span>
+            </div>
+            <span>${session.status ? escapeHtml(session.status.reason || "") : ""}</span>
+            <div class="session-summary">
+              <span>URL: ${escapeHtml(session.currentUrl || "-")}</span>
+              <span>Title: ${escapeHtml(session.title || "-")}</span>
+              <span>User-Agent: ${escapeHtml(shortenUserAgent(session.userAgent || "-"))}</span>
+            </div>
+            <span>파일 ${session.files.length}개</span>
+          </button>
+        </div>
+      `).join("");
+
+      sessionList.querySelectorAll("[data-session-id]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.selectedSessionId = button.dataset.sessionId;
+          const session = getSelectedSession();
+          state.selectedFile = getDefaultFile(session);
+          renderSessions();
+          renderFiles();
+          renderViewer();
+        });
+      });
+    }
+
+    function renderFiles() {
+      const session = getSelectedSession();
+      if (!session) {
+        fileList.innerHTML = '<div class="empty">선택된 세션이 없습니다.</div>';
+        return;
+      }
+
+      if (session.files.length === 0) {
+        fileList.innerHTML = '<div class="empty">이 세션에는 파일이 없습니다.</div>';
+        return;
+      }
+
+      fileList.innerHTML = session.files.map((file) => `
+        <div class="file-item ${state.selectedFile && state.selectedFile.url === file.url ? "active" : ""}">
+          <button class="file-button" type="button" data-file-url="${file.url}">
+            <strong>${file.name}</strong>
+            <span>${file.contentType} · ${formatBytes(file.size)}</span>
+          </button>
+        </div>
+      `).join("");
+
+      fileList.querySelectorAll("[data-file-url]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const sessionNow = getSelectedSession();
+          state.selectedFile = sessionNow.files.find((file) => file.url === button.dataset.fileUrl) || null;
+          renderFiles();
+          renderViewer();
+        });
+      });
+    }
+
+    async function renderViewer() {
+      const file = state.selectedFile;
+      if (!file) {
+        viewerTitle.textContent = "파일 미리보기";
+        viewerSubtitle.textContent = "파일을 선택하세요.";
+        viewer.innerHTML = '<div class="empty">파일을 선택하세요.</div>';
+        return;
+      }
+
+      viewerTitle.textContent = file.name;
+      const session = getSelectedSession();
+      const statusText = session && session.status ? ` · ${session.status.label}` : "";
+      viewerSubtitle.textContent = `${file.contentType} · ${formatBytes(file.size)}${statusText}`;
+
+      try {
+        const response = await fetch(file.url, { headers: authHeaders() });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const contentType = (response.headers.get("content-type") || file.contentType || "").toLowerCase();
+        if (contentType.includes("image/")) {
+          const blob = await response.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          viewer.innerHTML = `
+            <div class="viewer-meta">
+              <div>이미지 미리보기</div>
+              <div class="file-actions"><a href="${file.url}" target="_blank" rel="noreferrer">새 탭 열기</a></div>
+            </div>
+            <div class="image-wrap"><img src="${objectUrl}" alt="${file.name}"></div>
+          `;
+          return;
+        }
+
+        if (contentType.includes("text/html")) {
+          const text = await response.text();
+          const blob = new Blob([text], { type: "text/html" });
+          const objectUrl = URL.createObjectURL(blob);
+          viewer.innerHTML = `
+            <div class="viewer-meta">
+              <div>HTML 미리보기</div>
+              <div class="file-actions"><a href="${file.url}" target="_blank" rel="noreferrer">원본 열기</a></div>
+            </div>
+            <iframe src="${objectUrl}" title="${file.name}"></iframe>
+          `;
+          return;
+        }
+
+        const text = await response.text();
+        let prettyText = text;
+        if (contentType.includes("application/json")) {
+          try {
+            prettyText = JSON.stringify(JSON.parse(text), null, 2);
+          } catch (error) {
+          }
+        }
+
+        viewer.innerHTML = `
+          <div class="viewer-meta">
+            <div>텍스트 미리보기</div>
+            <div class="file-actions"><a href="${file.url}" target="_blank" rel="noreferrer">원본 열기</a></div>
+          </div>
+          <pre>${escapeHtml(prettyText)}</pre>
+        `;
+      } catch (error) {
+        viewer.innerHTML = `<div class="error">파일을 불러오지 못했습니다. ${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function escapeHtml(value) {
+      return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    async function loadSessions() {
+      state.activationKey = activationKeyInput.value.trim();
+      if (!state.activationKey) {
+        setFeedback("activationKey를 입력하세요.", true);
+        return;
+      }
+
+      loadButton.disabled = true;
+      setFeedback("세션을 불러오는 중입니다.");
+
+      try {
+        const response = await fetch("/debug/diagnostics", {
+          headers: authHeaders(),
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.message || `HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        state.sessions = payload.sessions || [];
+        const defaultSession = getDefaultSession(state.sessions);
+        state.selectedSessionId = defaultSession ? defaultSession.sessionId : null;
+        state.selectedFile = getDefaultFile(defaultSession);
+
+        renderSessions();
+        renderFiles();
+        await renderViewer();
+        setFeedback(`세션 ${state.sessions.length}개를 불러왔습니다.`);
+      } catch (error) {
+        state.sessions = [];
+        state.selectedSessionId = null;
+        state.selectedFile = null;
+        renderSessions();
+        renderFiles();
+        await renderViewer();
+        setFeedback(`세션을 불러오지 못했습니다. ${error.message}`, true);
+      } finally {
+        loadButton.disabled = false;
+      }
+    }
+
+    async function deleteSelectedSession() {
+      const session = getSelectedSession();
+      state.activationKey = activationKeyInput.value.trim();
+      if (!state.activationKey) {
+        setFeedback("activationKey를 입력하세요.", true);
+        return;
+      }
+      if (!session) {
+        setFeedback("삭제할 세션을 먼저 선택하세요.", true);
+        return;
+      }
+      if (!window.confirm(`${session.sessionId} 세션을 삭제할까요?`)) {
+        return;
+      }
+
+      deleteButton.disabled = true;
+      setFeedback(`세션 ${session.sessionId} 삭제 중입니다.`);
+      try {
+        const response = await fetch(`/debug/diagnostics/${session.sessionId}`, {
+          method: "DELETE",
+          headers: authHeaders(),
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.message || `HTTP ${response.status}`);
+        }
+        await loadSessions();
+        setFeedback(`세션 ${session.sessionId}를 삭제했습니다.`);
+      } catch (error) {
+        setFeedback(`세션 삭제에 실패했습니다. ${error.message}`, true);
+      } finally {
+        deleteButton.disabled = false;
+      }
+    }
+
+    async function deleteSessionsByMode(mode) {
+      state.activationKey = activationKeyInput.value.trim();
+      if (!state.activationKey) {
+        setFeedback("activationKey를 입력하세요.", true);
+        return;
+      }
+
+      const label = mode === "suspicious" ? "문제 세션" : "전체 세션";
+      if (!window.confirm(`${label}을 삭제할까요?`)) {
+        return;
+      }
+
+      deleteSuspiciousButton.disabled = true;
+      deleteAllButton.disabled = true;
+      setFeedback(`${label} 삭제 중입니다.`);
+      try {
+        const response = await fetch(`/debug/diagnostics?mode=${mode}`, {
+          method: "DELETE",
+          headers: authHeaders(),
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.message || `HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        await loadSessions();
+        setFeedback(`${label} ${payload.deletedSessionIds.length}개를 삭제했습니다.`);
+      } catch (error) {
+        setFeedback(`${label} 삭제에 실패했습니다. ${error.message}`, true);
+      } finally {
+        deleteSuspiciousButton.disabled = false;
+        deleteAllButton.disabled = false;
+      }
+    }
+
+    loadButton.addEventListener("click", loadSessions);
+    deleteButton.addEventListener("click", deleteSelectedSession);
+    deleteSuspiciousButton.addEventListener("click", () => deleteSessionsByMode("suspicious"));
+    deleteAllButton.addEventListener("click", () => deleteSessionsByMode("all"));
+    activationKeyInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        loadSessions();
+      }
+    });
+  </script>
+</body>
+</html>
