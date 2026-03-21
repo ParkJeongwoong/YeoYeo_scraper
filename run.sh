@@ -1,1 +1,1 @@
-nohup python3 app.py > nohup.out 2>&1 &
+nohup python3 flaskServer.py > nohup.out 2>&1 &
