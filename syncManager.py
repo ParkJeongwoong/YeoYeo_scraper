@@ -116,14 +116,13 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
     driver.goTo(bookingListUrl)
     log.info("예약자관리 페이지 이동")
     randomSleep(driver)
-    randomSleep(driver)
     randomRealSleep()
 
     # 예약자 정보 가져오기
     bookingList = []
     for i in range(monthSize):
         log.info(f"{i+1}번째 월 예약자 정보 가져오기 시작")
-        randomSleep(driver)
+        randomRealSleep()
         monthBookingList = bookingListExtractor.extractBookingList(
             driver.getPageSource()
         )
