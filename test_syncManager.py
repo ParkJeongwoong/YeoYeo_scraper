@@ -6,6 +6,7 @@ from syncManager import (
     makeTargetDate,
     SyncNaver,
     getNaverReservation,
+    ReservationLookupError,
     RoomType,
 )
 
@@ -387,7 +388,7 @@ class TestGetNaverReservation:
     @patch("syncManager.collectPageDiagnostics")
     @patch("syncManager.waitForBookingListDom")
     @patch("syncManager.bookingListExtractor.extractBookingList")
-    def test_get_naver_reservation_collects_diagnostics_when_dom_is_empty(
+    def test_get_naver_reservation_raises_when_dom_is_empty(
         self,
         mock_extract,
         mock_wait_for_booking_list,
@@ -408,19 +409,15 @@ class TestGetNaverReservation:
             {"selectorCounts": {"calendarNextButton": 0}},
         ]
 
-        not_canceled, all_bookings = getNaverReservation(mock_driver, 2)
+        with pytest.raises(ReservationLookupError) as exc_info:
+            getNaverReservation(mock_driver, 2)
 
-        assert not_canceled == []
-        assert all_bookings == []
+        assert "booking list DOM is empty" in str(exc_info.value)
         stages = [call.args[1] for call in mock_collect_diagnostics.call_args_list]
         assert "after_login" in stages
         assert "booking_list_loaded" in stages
-        assert "booking_list_month_1" in stages
-        assert "booking_list_month_1_empty" in stages
-        assert "booking_list_month_1_next_missing" in stages
         wait_stages = [call.args[2] for call in mock_wait_for_booking_list.call_args_list]
         assert "booking_list_initial" in wait_stages
-        assert "booking_list_month_1" in wait_stages
 
 
 class TestRoomType:

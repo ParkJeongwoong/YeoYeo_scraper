@@ -234,7 +234,7 @@ class GetNaverReservation(Resource):
                 )
         except Exception as e:
             log.error("네이버 예약 정보 가져오기 실패", e)
-            res = {"message": "Get Naver Reservation Failed"}
+            res = {"message": f"Get Naver Reservation Failed: {str(e)}"}
             httpStatus = 500
         finally:
             driver.close()

@@ -5,6 +5,7 @@ import shutil
 import time
 from enum import Enum
 from random import randint
+from typing import Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -17,6 +18,16 @@ import simpleManagementController
 class RoomType(Enum):
     Yeoyu = 0
     Yeohang = 1
+
+
+class ReservationLookupError(RuntimeError):
+    def __init__(self, reason: str, sessionId: Optional[str] = None):
+        self.reason = reason
+        self.sessionId = sessionId
+        if sessionId:
+            super().__init__(f"{reason} (sessionId={sessionId})")
+        else:
+            super().__init__(reason)
 
 
 # Constant
@@ -226,6 +237,28 @@ def waitForBookingListDom(
         return None
 
 
+def _isPageStateSuspicious(pageState: Optional[dict]) -> Tuple[bool, Optional[str]]:
+    if not pageState:
+        return True, "page state is unavailable"
+
+    detectedKeywords = pageState.get("detectedKeywords") or []
+    if detectedKeywords:
+        return (
+            True,
+            f"security or verification page detected: {', '.join(detectedKeywords[:5])}",
+        )
+
+    selectorCounts = pageState.get("selectorCounts") or {}
+    bookingCards = selectorCounts.get("bookingCards", 0)
+    calendarDateInfo = selectorCounts.get("calendarDateInfo", 0)
+    calendarNextButton = selectorCounts.get("calendarNextButton", 0)
+
+    if bookingCards == 0 and calendarDateInfo == 0 and calendarNextButton == 0:
+        return True, "booking list DOM is empty"
+
+    return False, None
+
+
 def makeTargetDateList(dateListStr: str) -> list:
     dateList = dateListStr.split(",")
     dateList.sort()
@@ -296,17 +329,29 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
     log.info("예약자관리 페이지 이동")
     randomSleep(driver)
     randomRealSleep()
-    waitForBookingListDom(driver, sessionId, "booking_list_initial")
-    collectPageDiagnostics(driver, "booking_list_loaded", sessionId)
+    if waitForBookingListDom(driver, sessionId, "booking_list_initial") is None:
+        raise ReservationLookupError("booking list page did not become ready", sessionId)
+    initialPageState = collectPageDiagnostics(driver, "booking_list_loaded", sessionId)
+    isSuspicious, suspiciousReason = _isPageStateSuspicious(initialPageState)
+    if isSuspicious:
+        raise ReservationLookupError(suspiciousReason, sessionId)
 
     bookingList = []
     for i in range(monthSize):
         monthIndex = i + 1
         stageBase = f"booking_list_month_{monthIndex}"
         log.info(f"{monthIndex}번째 월 예약자 정보 가져오기 시작")
-        waitForBookingListDom(driver, sessionId, stageBase)
+        if waitForBookingListDom(driver, sessionId, stageBase) is None:
+            raise ReservationLookupError(
+                f"booking list DOM wait timed out at {stageBase}", sessionId
+            )
         randomRealSleep()
         pageState = collectPageDiagnostics(driver, stageBase, sessionId)
+        isSuspicious, suspiciousReason = _isPageStateSuspicious(pageState)
+        if isSuspicious:
+            raise ReservationLookupError(
+                f"{suspiciousReason} at {stageBase}", sessionId
+            )
 
         monthBookingList = bookingListExtractor.extractBookingList(
             driver.getPageSource()
@@ -315,6 +360,11 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
         log.info(monthBookingList)
         if len(monthBookingList) == 0:
             collectPageDiagnostics(driver, f"{stageBase}_empty", sessionId, True)
+            selectorCounts = pageState.get("selectorCounts") or {}
+            if selectorCounts.get("bookingCards", 0) == 0:
+                raise ReservationLookupError(
+                    f"no booking cards found in DOM at {stageBase}", sessionId
+                )
         bookingList.extend(monthBookingList)
 
         if i < monthSize - 1:
@@ -324,7 +374,9 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
                 collectPageDiagnostics(
                     driver, f"{stageBase}_next_missing", sessionId, True
                 )
-                break
+                raise ReservationLookupError(
+                    f"next calendar button is missing at {stageBase}", sessionId
+                )
             try:
                 driver.waitForAnySelector(
                     ['button[class*="DatePeriodCalendar__next"]'], 10
@@ -341,13 +393,18 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
                     collectPageDiagnostics(
                         driver, f"{stageBase}_next_disabled", sessionId, True
                     )
-                    break
+                    raise ReservationLookupError(
+                        f"next calendar button is disabled at {stageBase}", sessionId
+                    )
             except Exception as e:
                 log.error(f"Failed to advance booking calendar [{stageBase}]", e)
                 collectPageDiagnostics(
                     driver, f"{stageBase}_next_error", sessionId, True
                 )
-                break
+                raise ReservationLookupError(
+                    f"failed to advance booking calendar at {stageBase}: {e}",
+                    sessionId,
+                ) from e
 
     bookingList = list(
         {booking["reservationNumber"]: booking for booking in bookingList}.values()

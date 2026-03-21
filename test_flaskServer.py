@@ -459,7 +459,7 @@ class TestGetNaverReservation:
 
         assert response.status_code == 500
         result = response.get_json()
-        assert result["message"] == "Get Naver Reservation Failed"
+        assert result["message"] == "Get Naver Reservation Failed: Test error"
         mock_driver_instance.close.assert_called_once()
 
     @patch('flaskServer.syncManager.getNaverReservation')
