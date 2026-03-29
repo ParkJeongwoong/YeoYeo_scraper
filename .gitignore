@@ -1,6 +1,7 @@
 logs/
 nohub.out
 old_nohub*
+profile/
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,flask,dotenv,venv
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,flask,dotenv,venv
