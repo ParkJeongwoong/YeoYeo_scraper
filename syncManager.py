@@ -60,7 +60,6 @@ securityKeywords = [
     "로그인",
     "인증",
     "보안",
-    "약관",
     "차단",
     "캡차",
     "captcha",
