@@ -18,6 +18,7 @@ load_dotenv()
 class ChromeDriver(driver.Driver):
 
     def __init__(self):
+        self.debug_mode = os.getenv("DEBUG_MODE", "False").lower() == "true"
         self.options = self.getOptions()
         self.driver = self.getDriver(self.options)
         self.driver.implicitly_wait(0)
@@ -25,8 +26,9 @@ class ChromeDriver(driver.Driver):
     def getOptions(self) -> uc.ChromeOptions:
         options = uc.ChromeOptions()
 
-        # headless 옵션 설정
-        options.add_argument("--headless=new")
+        # headless 옵션 설정 (디버그 모드에서는 비활성화)
+        if not self.debug_mode:
+            options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
 
@@ -53,8 +55,10 @@ class ChromeDriver(driver.Driver):
 
     def close(self):
         if self.driver:
-            self.driver.quit()
-            self.driver = None
+            # 디버그 모드에서는 브라우저를 자동으로 닫지 않음
+            if not self.debug_mode:
+                self.driver.quit()
+                self.driver = None
 
     def goTo(self, url):
         self.driver.get(url)
@@ -89,6 +93,15 @@ class ChromeDriver(driver.Driver):
             f"document.querySelector('input[id=\"pw\"]').setAttribute('value', '{pw}')"
         )
         self.wait(1)
+
+        # 로그인 상태 유지 체크박스 클릭
+        try:
+            keep_login_checkbox = self.driver.find_element(By.ID, "keep")
+            if not keep_login_checkbox.is_selected():
+                keep_login_checkbox.click()
+                self.wait(0.5)
+        except Exception:
+            pass  # 체크박스가 없거나 이미 선택된 경우 무시
 
     def getPageSource(self):
         return self.driver.page_source
