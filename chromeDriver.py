@@ -1,18 +1,18 @@
 import driver
 import time
-import selenium
-from selenium import webdriver
+import os
+import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
-
-from selenium_stealth import stealth
+from dotenv import load_dotenv
 
 import pyperclip
+
+load_dotenv()
 
 
 class ChromeDriver(driver.Driver):
@@ -22,68 +22,33 @@ class ChromeDriver(driver.Driver):
         self.driver = self.getDriver(self.options)
         self.driver.implicitly_wait(0)
 
-    def getOptions(self) -> Options:
-        options = Options()
+    def getOptions(self) -> uc.ChromeOptions:
+        options = uc.ChromeOptions()
 
         # headless 옵션 설정
-        options.add_argument(
-            "--headless=new"
-        )  # 'new'를 사용하여 새로운 headless 모드를 활성화
+        options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-extensions")
-        options.add_experimental_option("useAutomationExtension", False)
+        options.add_argument("--disable-dev-shm-usage")
 
         # 브라우저 윈도우 사이즈
-        options.add_argument("window-size=1920x1080")
-        options.add_argument("--start-maximized")
+        options.add_argument("--window-size=1920,1080")
 
         # 사람처럼 보이게 하는 옵션들
-        options.add_argument("disable-gpu")  # 가속 사용 x
-        options.add_argument("lang=ko_KR")  # 가짜 플러그인 탑재
-        options.add_argument(
-            "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36"
-        )  # user-agent 이름 설정
-
-        # 브라우저 꺼짐 방지
-        options.add_experimental_option("detach", True)
+        options.add_argument("--disable-gpu")
+        options.add_argument("--lang=ko_KR")
 
         # 불필요한 에러메시지 노출 방지
-        options.add_experimental_option("excludeSwitches", ["enable-logging"])
+        options.add_argument("--log-level=3")
+
+        # 크롬 사용자 프로필 재사용
+        chrome_profile_path = os.getenv("CHROME_PROFILE_PATH")
+        if chrome_profile_path:
+            options.add_argument(f"--user-data-dir={chrome_profile_path}")
 
         return options
 
-    def getDriver(self, options) -> webdriver.Chrome:
-        driver = webdriver.Chrome(options=options)
-        driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {
-                "source": """
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """
-            },
-        )
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'plugins', {get: function() {return[1, 2, 3, 4, 5];},});"
-        )
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'languages', {get: function() {return ['ko-KR', 'ko']}})"
-        )
-        driver.execute_script(
-            "const getParameter = WebGLRenderingContext.getParameter;WebGLRenderingContext.prototype.getParameter = function(parameter) {if (parameter === 37445) {return 'NVIDIA Corporation'} if (parameter === 37446) {return 'NVIDIA GeForce GTX 980 Ti OpenGL Engine';}return getParameter(parameter);};"
-        )
-
-        stealth(
-            driver,
-            languages=["ko-KR", "ko"],
-            vendor="Google Inc.",
-            platform="Win64",
-            webgl_vendor="Intel Inc.",
-            renderer="Intel Iris OpenGL Engine",
-            fix_hairline=True,
-        )
+    def getDriver(self, options) -> uc.Chrome:
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=146)
         return driver
 
     def close(self):
@@ -167,6 +132,27 @@ class ChromeDriver(driver.Driver):
     def saveScreenshot(self, path):
         return self.driver.save_screenshot(path)
 
+    def saveFullPageScreenshot(self, path):
+        """전체 페이지 스크린샷 (스크롤 포함)"""
+        # 원래 윈도우 사이즈 저장
+        originalSize = self.driver.get_window_size()
+        
+        # 전체 페이지 크기 계산
+        totalWidth = self.driver.execute_script("return document.body.scrollWidth")
+        totalHeight = self.driver.execute_script("return document.body.scrollHeight")
+        
+        # 윈도우 사이즈를 전체 페이지 크기로 변경
+        self.driver.set_window_size(totalWidth, totalHeight)
+        time.sleep(0.5)  # 리사이즈 완료 대기
+        
+        # 스크린샷 촬영
+        result = self.driver.save_screenshot(path)
+        
+        # 원래 윈도우 사이즈로 복원
+        self.driver.set_window_size(originalSize['width'], originalSize['height'])
+        
+        return result
+
     def getBrowserInfo(self):
         capabilities = self.driver.capabilities
         chrome_info = capabilities.get("chrome", {})
@@ -178,7 +164,7 @@ class ChromeDriver(driver.Driver):
             "browserVersion": capabilities.get("browserVersion"),
             "chromedriverVersion": chromedriver_version,
             "platformName": capabilities.get("platformName"),
-            "seleniumVersion": selenium.__version__,
+            "seleniumVersion": uc.__version__,
             "headless": any(
                 argument.startswith("--headless") for argument in self.options.arguments
             ),

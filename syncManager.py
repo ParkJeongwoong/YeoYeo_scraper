@@ -33,6 +33,7 @@ class ReservationLookupError(RuntimeError):
 # Constant
 naverBizUrl = "https://nid.naver.com/nidlogin.login?svctype=1&locale=ko_KR&url=https%3A%2F%2Fnew.smartplace.naver.com%2F%3Fnext%3Dbooking-order-management&area=bbt"
 naverLoginUrl = "https://nid.naver.com/nidlogin.login"
+naverMainUrl = "https://www.naver.com"
 simpleReservationManagementUrl = (
     "https://partner.booking.naver.com/bizes/899762/simple-management"
 )
@@ -75,14 +76,57 @@ def getDiagnosticRetentionDays() -> int:
     except ValueError:
         return 0
 
+
 load_dotenv()
 
 id = os.environ.get("ID")
 pw = os.environ.get("PASSWORD")
 
-# Temporary Variable
-# targetDatesStr = '2024-09-02,2024-09-03'
-# targetRoom = RoomType.Yeohang
+
+def checkLoginSession(driverInstance: driver.Driver) -> bool:
+    """
+    네이버 메인 페이지에서 로그인 세션이 유지되어 있는지 확인
+    Returns: True if logged in, False otherwise
+    """
+    try:
+        driverInstance.goTo(naverMainUrl)
+        log.info("[Session Check] 네이버 메인 페이지 이동")
+        
+        # 로그인 상태 확인: 로그인 버튼 존재 여부로 판단
+        loginBtnCount = _countSelector(driverInstance, 'a.MyView-module__link_login___HpHMW')
+        logoutBtnCount = _countSelector(driverInstance, 'a.MyView-module__link_logout___HLv1Y')
+        
+        if logoutBtnCount > 0:
+            log.info("[Session Check] ✓ 프로필 로그인 세션 유지됨 - 로그인 스킵")
+            return True
+        elif loginBtnCount > 0:
+            log.info("[Session Check] ✗ 로그인 세션 없음 - 로그인 필요")
+            return False
+        else:
+            # 다른 방법으로 확인: 페이지 소스에서 로그인 관련 텍스트 확인
+            pageSource = driverInstance.getPageSource()
+            if '로그아웃' in pageSource or 'logout' in pageSource.lower():
+                log.info("[Session Check] ✓ 프로필 로그인 세션 유지됨 (텍스트 확인) - 로그인 스킵")
+                return True
+            else:
+                log.info("[Session Check] ✗ 로그인 상태 불명확 - 로그인 진행")
+                return False
+    except Exception as e:
+        log.error("[Session Check] 세션 확인 중 오류 발생", e)
+        return False
+
+
+def performLogin(driverInstance: driver.Driver):
+    """
+    네이버 로그인 수행
+    """
+    driverInstance.goTo(naverLoginUrl)
+    log.info("네이버 로그인 페이지 이동")
+    driverInstance.login(id, pw)
+    driverInstance.findBySelector("#log\\.login").click()
+    log.info("로그인 성공")
+    randomSleep(driverInstance)
+    randomRealSleep()
 
 
 def randomSleep(dirver: driver.Driver):
@@ -276,14 +320,10 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> lis
     successDates = []
 
     reservationManager = simpleManagementController.SimpleManagementController()
-    driver.goTo(naverLoginUrl)
-    log.info("네이버 로그인 페이지 이동")
-
-    driver.login(id, pw)
-    driver.findBySelector("#log\\.login").click()
-    log.info("로그인 성공")
-    randomSleep(driver)
-    randomRealSleep()
+    
+    # 세션 확인 후 로그인 스킵 또는 진행
+    if not checkLoginSession(driver):
+        performLogin(driver)
 
     driver.goTo(simpleReservationManagementUrl)
     log.info("간단예약관리 페이지 이동")
@@ -313,16 +353,14 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> lis
 
 def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
     sessionId = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    driver.goTo(naverLoginUrl)
-    driver.login(id, pw)
-
-    driver.findBySelector("#log\\.login").click()
-    log.info("로그인 성공")
+    
+    # 세션 확인 후 로그인 스킵 또는 진행
+    if not checkLoginSession(driver):
+        performLogin(driver)
+    
     log.info(
         f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
     )
-    randomSleep(driver)
-    randomRealSleep()
     collectPageDiagnostics(driver, "after_login", sessionId)
 
     driver.goTo(bookingListUrl)
