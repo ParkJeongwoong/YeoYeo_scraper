@@ -157,6 +157,28 @@ def _countSelector(driverInstance: driver.Driver, selector: str) -> int:
     return int(result or 0)
 
 
+def _waitForFontRendering(driverInstance: driver.Driver, timeoutSeconds: float = 5.0):
+    deadline = time.time() + timeoutSeconds
+    while time.time() < deadline:
+        fontStatus = _safeDriverCall(
+            lambda: driverInstance.executeScript(
+                "return document.fonts ? document.fonts.status : 'unsupported';"
+            ),
+            "unknown",
+        )
+        if fontStatus in ("loaded", "unsupported"):
+            driverInstance.wait(0.3)
+            return fontStatus
+        driverInstance.wait(0.2)
+
+    return _safeDriverCall(
+        lambda: driverInstance.executeScript(
+            "return document.fonts ? document.fonts.status : 'unsupported';"
+        ),
+        "unknown",
+    )
+
+
 def _getPageState(driverInstance: driver.Driver) -> dict:
     bodyText = _safeDriverCall(
         lambda: driverInstance.executeScript(
@@ -183,6 +205,12 @@ def _getPageState(driverInstance: driver.Driver) -> dict:
         "title": _safeDriverCall(driverInstance.getTitle, ""),
         "readyState": _safeDriverCall(
             lambda: driverInstance.executeScript("return document.readyState;"), None
+        ),
+        "fontStatus": _safeDriverCall(
+            lambda: driverInstance.executeScript(
+                "return document.fonts ? document.fonts.status : null;"
+            ),
+            None,
         ),
         "userAgent": _safeDriverCall(
             lambda: driverInstance.executeScript("return navigator.userAgent;"), None
@@ -251,11 +279,12 @@ def collectPageDiagnostics(
     with open(jsonPath, "w", encoding="utf-8") as jsonFile:
         json.dump(pageState, jsonFile, ensure_ascii=False, indent=2, default=str)
 
+    fontStatus = _waitForFontRendering(driverInstance)
     screenshotSaved = _safeDriverCall(
         lambda: driverInstance.saveScreenshot(screenshotPath), False
     )
     log.info(
-        f"DOM diagnostics saved [{stage}]: html={htmlPath}, json={jsonPath}, screenshot={screenshotPath}, screenshotSaved={screenshotSaved}"
+        f"DOM diagnostics saved [{stage}]: html={htmlPath}, json={jsonPath}, screenshot={screenshotPath}, fontStatus={fontStatus}, screenshotSaved={screenshotSaved}"
     )
 
     return pageState
