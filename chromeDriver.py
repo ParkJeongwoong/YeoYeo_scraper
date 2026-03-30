@@ -16,6 +16,8 @@ load_dotenv()
 
 
 class ChromeDriver(driver.Driver):
+    BROWSER_LANGUAGE = "ko-KR"
+    ACCEPT_LANGUAGES = "ko-KR,ko,en-US,en"
 
     def __init__(self):
         self.debug_mode = os.getenv("DEBUG_MODE", "False").lower() == "true"
@@ -37,7 +39,11 @@ class ChromeDriver(driver.Driver):
 
         # 사람처럼 보이게 하는 옵션들
         options.add_argument("--disable-gpu")
-        options.add_argument("--lang=ko_KR")
+        options.add_argument(f"--lang={self.BROWSER_LANGUAGE}")
+        options.add_experimental_option(
+            "prefs",
+            {"intl.accept_languages": self.ACCEPT_LANGUAGES},
+        )
 
         # 불필요한 에러메시지 노출 방지
         options.add_argument("--log-level=3")
@@ -51,7 +57,38 @@ class ChromeDriver(driver.Driver):
 
     def getDriver(self, options) -> uc.Chrome:
         driver = uc.Chrome(options=options, use_subprocess=True, version_main=146)
+        self._applyLanguageOverrides(driver)
         return driver
+
+    def _applyLanguageOverrides(self, driver):
+        language = self.BROWSER_LANGUAGE
+        languages = self.ACCEPT_LANGUAGES.split(",")
+        userAgent = driver.execute_script("return navigator.userAgent;")
+        platform = driver.execute_script("return navigator.platform;")
+
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd(
+            "Network.setUserAgentOverride",
+            {
+                "userAgent": userAgent,
+                "acceptLanguage": self.ACCEPT_LANGUAGES,
+                "platform": platform,
+            },
+        )
+        driver.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": language})
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": f"""
+Object.defineProperty(navigator, 'language', {{
+    get: () => '{language}'
+}});
+Object.defineProperty(navigator, 'languages', {{
+    get: () => {languages}
+}});
+""".strip()
+            },
+        )
 
     def close(self):
         if self.driver:
@@ -180,6 +217,11 @@ class ChromeDriver(driver.Driver):
             "seleniumVersion": uc.__version__,
             "headless": any(
                 argument.startswith("--headless") for argument in self.options.arguments
+            ),
+            "language": self.executeScript("return navigator.language;"),
+            "languages": self.executeScript("return navigator.languages;"),
+            "intlLocale": self.executeScript(
+                "return Intl.DateTimeFormat().resolvedOptions().locale;"
             ),
         }
 

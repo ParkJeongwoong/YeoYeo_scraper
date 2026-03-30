@@ -372,6 +372,10 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> lis
     if not checkLoginSession(driver):
         performLogin(driver)
 
+    log.info(
+        f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
+    )
+
     driver.goTo(simpleReservationManagementUrl)
     log.info("간단예약관리 페이지 이동")
     randomSleep(driver)
