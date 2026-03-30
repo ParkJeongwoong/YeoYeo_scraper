@@ -508,7 +508,10 @@ def listDiagnosticSessions(requestActivationKey: str):
             "title": summary["title"],
             "userAgent": summary["userAgent"],
         })
-    sessions.sort(key=lambda session: session["updatedAt"], reverse=True)
+    sessions.sort(
+        key=lambda session: (session["updatedAt"], session["sessionId"]),
+        reverse=True,
+    )
     return sessions
 
 

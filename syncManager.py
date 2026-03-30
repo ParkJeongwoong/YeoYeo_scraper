@@ -188,6 +188,7 @@ def _getPageState(driverInstance: driver.Driver) -> dict:
             lambda: driverInstance.executeScript("return navigator.userAgent;"), None
         ),
         "bodyTextPreview": bodyText[:500],
+        "hasBookingListEmptyState": bookingListExtractor.hasBookingListEmptyText(bodyText),
         "selectorCounts": selectorCounts,
         "detectedKeywords": detectedKeywords,
         "browserInfo": _safeDriverCall(driverInstance.getBrowserInfo, {}),
@@ -264,20 +265,35 @@ def waitForBookingListDom(
     driverInstance: driver.Driver, sessionId: str, stage: str, timeout: int = 20
 ):
     _safeDriverCall(lambda: driverInstance.waitForDocumentReady(timeout), None)
-    try:
-        matchedSelector = driverInstance.waitForAnySelector(
-            bookingListReadySelectors, timeout
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for selector in bookingListReadySelectors:
+            selectorCount = _countSelector(driverInstance, selector)
+            if selectorCount > 0:
+                matchedSelector = {"selector": selector, "count": selectorCount}
+                log.info(
+                    f"Booking list DOM ready [{stage}]: {json.dumps(matchedSelector, ensure_ascii=False, default=str)}"
+                )
+                return matchedSelector
+
+        bodyText = _safeDriverCall(
+            lambda: driverInstance.executeScript(
+                "return document.body ? document.body.innerText : '';"
+            ),
+            "",
         )
-        log.info(
-            f"Booking list DOM ready [{stage}]: {json.dumps(matchedSelector, ensure_ascii=False, default=str)}"
-        )
-        return matchedSelector
-    except Exception as e:
-        log.error(f"Booking list DOM wait timeout [{stage}]", e)
-        collectPageDiagnostics(
-            driverInstance, f"{stage}_timeout", sessionId, forceWrite=True
-        )
-        return None
+        if bodyText and bookingListExtractor.hasBookingListEmptyText(str(bodyText)):
+            emptyState = {"emptyState": True}
+            log.info(
+                f"Booking list DOM ready [{stage}]: {json.dumps(emptyState, ensure_ascii=False, default=str)}"
+            )
+            return emptyState
+
+        time.sleep(0.5)
+
+    log.error(f"Booking list DOM wait timeout [{stage}]", TimeoutError(stage))
+    collectPageDiagnostics(driverInstance, f"{stage}_timeout", sessionId, forceWrite=True)
+    return None
 
 
 def _isPageStateSuspicious(pageState: Optional[dict]) -> Tuple[bool, Optional[str]]:
@@ -290,6 +306,9 @@ def _isPageStateSuspicious(pageState: Optional[dict]) -> Tuple[bool, Optional[st
             True,
             f"security or verification page detected: {', '.join(detectedKeywords[:5])}",
         )
+
+    if pageState.get("hasBookingListEmptyState"):
+        return False, None
 
     selectorCounts = pageState.get("selectorCounts") or {}
     bookingCards = selectorCounts.get("bookingCards", 0)
@@ -390,17 +409,22 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
                 f"{suspiciousReason} at {stageBase}", sessionId
             )
 
-        monthBookingList = bookingListExtractor.extractBookingList(
-            driver.getPageSource()
-        )
+        pageSource = driver.getPageSource()
+        monthBookingList = bookingListExtractor.extractBookingList(pageSource)
         log.info(f"length: {len(monthBookingList)}")
         log.info(monthBookingList)
         if len(monthBookingList) == 0:
-            collectPageDiagnostics(driver, f"{stageBase}_empty", sessionId, True)
-            selectorCounts = pageState.get("selectorCounts") or {}
-            if selectorCounts.get("bookingCards", 0) == 0:
+            if bookingListExtractor.hasBookingListEmptyState(pageSource):
+                log.info(f"No reservations found for {stageBase}; treating as empty month")
+            else:
+                collectPageDiagnostics(driver, f"{stageBase}_empty", sessionId, True)
+                selectorCounts = pageState.get("selectorCounts") or {}
+                if selectorCounts.get("bookingCards", 0) == 0:
+                    raise ReservationLookupError(
+                        f"no booking cards found in DOM at {stageBase}", sessionId
+                    )
                 raise ReservationLookupError(
-                    f"no booking cards found in DOM at {stageBase}", sessionId
+                    f"booking list parsing returned no items at {stageBase}", sessionId
                 )
         bookingList.extend(monthBookingList)
 

@@ -1,5 +1,11 @@
 import pytest
-from bookingListExtractor import parseDateInfo, getStartEndDate, extractBookingInfo
+from bookingListExtractor import (
+    extractBookingInfo,
+    getStartEndDate,
+    hasBookingListEmptyState,
+    hasBookingListEmptyText,
+    parseDateInfo,
+)
 from bs4 import BeautifulSoup as bs
 
 
@@ -132,3 +138,34 @@ class TestExtractBookingInfo:
         assert result["name"] == "이영희"
         assert result["comment"] is None
         assert result["option"] == "바베큐 세트"
+
+
+class TestHasBookingListEmptyState:
+    def test_returns_true_for_known_empty_text(self):
+        text = "예약0건 조회된 예약내역이 없습니다. 기간과 기준,필터를 확인한 후 다시 조회해 주세요."
+
+        assert hasBookingListEmptyText(text) is True
+
+    def test_returns_true_for_naver_empty_booking_message(self):
+        html = """
+        <html>
+            <body>
+                <div>예약0건</div>
+                <div>조회된 예약내역이 없습니다.</div>
+                <div>기간과 기준,필터를 확인한 후 다시 조회해 주세요.</div>
+            </body>
+        </html>
+        """
+
+        assert hasBookingListEmptyState(html) is True
+
+    def test_returns_false_when_empty_state_message_is_absent(self):
+        html = """
+        <html>
+            <body>
+                <a class="BookingListView__contents-user">예약 카드</a>
+            </body>
+        </html>
+        """
+
+        assert hasBookingListEmptyState(html) is False

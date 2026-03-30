@@ -8,6 +8,7 @@ from syncManager import (
     getNaverReservation,
     ReservationLookupError,
     RoomType,
+    waitForBookingListDom,
 )
 
 
@@ -81,8 +82,9 @@ class TestSyncNaver:
     @patch("syncManager.pw", "test_pw")
     @patch("syncManager.randomSleep")
     @patch("syncManager.randomRealSleep")
+    @patch("syncManager.checkLoginSession", return_value=False)
     def test_sync_naver_single_date_yeoyu(
-        self, mock_real_sleep, mock_sleep
+        self, mock_check_session, mock_real_sleep, mock_sleep
     ):
         mock_driver = MagicMock()
         mock_driver.findBySelector.return_value.click = MagicMock()
@@ -259,6 +261,45 @@ class TestGetNaverReservation:
     @patch("syncManager.randomSleep")
     @patch("syncManager.randomRealSleep")
     @patch("syncManager.bookingListExtractor.extractBookingList")
+    def test_get_naver_reservation_allows_empty_month(
+        self, mock_extract, mock_real_sleep, mock_sleep
+    ):
+        mock_driver = MagicMock()
+        mock_driver.findBySelector.return_value.click = MagicMock()
+        mock_driver.getPageSource.side_effect = [
+            "<html><body><a class=\"BookingListView__contents-user\"></a></body></html>",
+            "<html><body><div>예약0건</div><div>조회된 예약내역이 없습니다.</div></body></html>",
+        ]
+        mock_driver.findByXpath.return_value = MagicMock()
+        mock_driver.getBrowserInfo.return_value = {}
+
+        future_date = datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
+        ) + datetime.timedelta(days=7)
+        future_date_str = future_date.strftime("%Y%m%d")
+
+        mock_extract.side_effect = [
+            [
+                {
+                    "reservationNumber": "12345",
+                    "startDate": future_date_str,
+                    "status": "?덉빟?뺤젙",
+                }
+            ],
+            [],
+        ]
+
+        not_canceled, all_bookings = getNaverReservation(mock_driver, 2)
+
+        assert len(all_bookings) == 1
+        assert len(not_canceled) == 1
+        assert all_bookings[0]["reservationNumber"] == "12345"
+        mock_driver.findByXpath.assert_called_once()
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    @patch("syncManager.bookingListExtractor.extractBookingList")
     def test_get_naver_reservation_filters_canceled(
         self, mock_extract, mock_real_sleep, mock_sleep
     ):
@@ -418,6 +459,28 @@ class TestGetNaverReservation:
         assert "booking_list_loaded" in stages
         wait_stages = [call.args[2] for call in mock_wait_for_booking_list.call_args_list]
         assert "booking_list_initial" in wait_stages
+
+
+class TestWaitForBookingListDom:
+    def test_accepts_empty_state_without_ready_selectors(self):
+        mock_driver = MagicMock()
+
+        def execute_script(script, *args):
+            if "querySelectorAll" in script:
+                return 0
+            if "document.body ? document.body.innerText" in script:
+                return "예약0건 조회된 예약내역이 없습니다."
+            if "document.readyState" in script:
+                return "complete"
+            return None
+
+        mock_driver.executeScript.side_effect = execute_script
+
+        result = waitForBookingListDom(
+            mock_driver, "test_session", "booking_list_month_1", timeout=1
+        )
+
+        assert result == {"emptyState": True}
 
 
 class TestRoomType:

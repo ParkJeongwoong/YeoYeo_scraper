@@ -1,11 +1,29 @@
 from bs4 import BeautifulSoup as bs
 
+EMPTY_BOOKING_LIST_MARKERS = (
+    "조회된 예약내역이 없습니다.",
+    "조회된 예약 내역이 없습니다.",
+    "기간과 기준,필터를 확인한 후 다시 조회해 주세요.",
+    "기간과 기준, 필터를 확인한 후 다시 조회해 주세요.",
+)
+
 
 def extractBookingList(html: str) -> list:
     soup = bs(html, "html.parser")
     bookingList = soup.select('a[class^="BookingListView__contents-user"]')
     bookingInfoList = list(map(extractBookingInfo, bookingList))
     return bookingInfoList
+
+
+def hasBookingListEmptyText(text: str) -> bool:
+    normalizedText = " ".join((text or "").split())
+    return any(marker in normalizedText for marker in EMPTY_BOOKING_LIST_MARKERS)
+
+
+def hasBookingListEmptyState(html: str) -> bool:
+    soup = bs(html, "html.parser")
+    bodyText = soup.get_text(" ", strip=True)
+    return hasBookingListEmptyText(bodyText)
 
 
 def extractBookingInfo(booking: bs) -> dict:
