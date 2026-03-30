@@ -86,7 +86,8 @@
     }
 
     .auth button,
-    .file-actions a {
+    .file-actions a,
+    .file-actions button {
       border: 0;
       background: var(--accent);
       color: #fff;
@@ -98,6 +99,10 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
+    }
+
+    .file-actions button {
+      font-family: inherit;
     }
 
     .auth button.danger {
@@ -311,6 +316,14 @@
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
     }
 
+    .image-wrap.original-size {
+      justify-content: flex-start;
+    }
+
+    .image-wrap.original-size img {
+      max-width: none;
+    }
+
     @media (max-width: 960px) {
       .layout {
         grid-template-columns: 1fr;
@@ -450,6 +463,14 @@
       };
     }
 
+    function buildAuthorizedUrl(url) {
+      const authorizedUrl = new URL(url, window.location.origin);
+      if (state.activationKey) {
+        authorizedUrl.searchParams.set("activationKey", state.activationKey);
+      }
+      return authorizedUrl.toString();
+    }
+
     function renderSessions() {
       if (state.sessions.length === 0) {
         sessionList.innerHTML = '<div class="empty">진단 세션이 없습니다.</div>';
@@ -542,13 +563,23 @@
         if (contentType.includes("image/")) {
           const blob = await response.blob();
           const objectUrl = URL.createObjectURL(blob);
+          const authorizedUrl = buildAuthorizedUrl(file.url);
           viewer.innerHTML = `
             <div class="viewer-meta">
               <div>이미지 미리보기</div>
-              <div class="file-actions"><a href="${file.url}" target="_blank" rel="noreferrer">새 탭 열기</a></div>
+              <div class="file-actions">
+                <button id="toggleImageSizeButton" type="button">원본 크기 보기</button>
+                <a href="${escapeAttribute(authorizedUrl)}" target="_blank" rel="noreferrer">원본 열기</a>
+              </div>
             </div>
             <div class="image-wrap"><img src="${objectUrl}" alt="${file.name}"></div>
           `;
+          const imageWrap = viewer.querySelector(".image-wrap");
+          const toggleImageSizeButton = viewer.querySelector("#toggleImageSizeButton");
+          toggleImageSizeButton.addEventListener("click", () => {
+            const isOriginalSize = imageWrap.classList.toggle("original-size");
+            toggleImageSizeButton.textContent = isOriginalSize ? "화면 맞춤" : "원본 크기 보기";
+          });
           return;
         }
 
@@ -556,10 +587,11 @@
           const text = await response.text();
           const blob = new Blob([text], { type: "text/html" });
           const objectUrl = URL.createObjectURL(blob);
+          const authorizedUrl = buildAuthorizedUrl(file.url);
           viewer.innerHTML = `
             <div class="viewer-meta">
               <div>HTML 미리보기</div>
-              <div class="file-actions"><a href="${file.url}" target="_blank" rel="noreferrer">원본 열기</a></div>
+              <div class="file-actions"><a href="${escapeAttribute(authorizedUrl)}" target="_blank" rel="noreferrer">원본 열기</a></div>
             </div>
             <iframe src="${objectUrl}" title="${file.name}"></iframe>
           `;
@@ -578,7 +610,7 @@
         viewer.innerHTML = `
           <div class="viewer-meta">
             <div>텍스트 미리보기</div>
-            <div class="file-actions"><a href="${file.url}" target="_blank" rel="noreferrer">원본 열기</a></div>
+            <div class="file-actions"><a href="${escapeAttribute(buildAuthorizedUrl(file.url))}" target="_blank" rel="noreferrer">원본 열기</a></div>
           </div>
           <pre>${escapeHtml(prettyText)}</pre>
         `;
@@ -592,6 +624,10 @@
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;");
+    }
+
+    function escapeAttribute(value) {
+      return escapeHtml(String(value)).replaceAll('"', "&quot;");
     }
 
     async function loadSessions() {
