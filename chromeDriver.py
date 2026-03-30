@@ -18,6 +18,7 @@ load_dotenv()
 class ChromeDriver(driver.Driver):
     BROWSER_LANGUAGE = "ko-KR"
     ACCEPT_LANGUAGES = "ko-KR,ko,en-US,en"
+    CDP_LOCALE = "ko_KR"
 
     def __init__(self):
         self.debug_mode = os.getenv("DEBUG_MODE", "False").lower() == "true"
@@ -62,6 +63,7 @@ class ChromeDriver(driver.Driver):
 
     def _applyLanguageOverrides(self, driver):
         language = self.BROWSER_LANGUAGE
+        cdpLocale = self.CDP_LOCALE
         languages = self.ACCEPT_LANGUAGES.split(",")
         userAgent = driver.execute_script("return navigator.userAgent;")
         platform = driver.execute_script("return navigator.platform;")
@@ -75,7 +77,7 @@ class ChromeDriver(driver.Driver):
                 "platform": platform,
             },
         )
-        driver.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": language})
+        driver.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": cdpLocale})
         driver.execute_cdp_cmd(
             "Page.addScriptToEvaluateOnNewDocument",
             {
