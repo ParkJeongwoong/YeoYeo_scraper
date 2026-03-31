@@ -543,4 +543,5 @@ def deleteDiagnosticSessions(mode: str):
 
 
 if __name__ == "__main__":
-    app.run("0.0.0.0", port=5000, debug=True)
+    debugMode = os.environ.get("DEBUG_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+    app.run("0.0.0.0", port=5000, debug=debugMode, use_reloader=debugMode)
