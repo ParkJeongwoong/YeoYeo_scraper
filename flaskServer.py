@@ -97,19 +97,19 @@ class SyncNaverReservation(Resource):
     @sync_ns.response(500, 'Internal Server Error', sync_in_error_response_model)
     def post(self):
         """네이버 예약 상태 변경 (예약 가능/불가능 토글)"""
-        driver = chromeDriver.ChromeDriver()
+        driver = None
         res: dict
         httpStatus: int
 
         try:
             req = request.get_json()
-            if req["targetDatesStr"] != None:
-                targetDatesStr = req["targetDatesStr"]
-            targetRoom = req["targetRoom"]
             if checkActivationKey(req) == False:
                 res = {"message": "Invalid Access Key", "data": req}
                 httpStatus = 401
             else:
+                targetDatesStr = req.get("targetDatesStr")
+                targetRoom = req["targetRoom"]
+                driver = chromeDriver.ChromeDriver()
                 log.info(f"targetDatesStr: {targetDatesStr}, targetRoom: {targetRoom}")
                 successDates = syncManager.SyncNaver(driver, targetDatesStr, targetRoom)
                 res = {"message": "Sync Naver Reservation", "successDates": successDates, "data": req}
@@ -119,7 +119,8 @@ class SyncNaverReservation(Resource):
             res = {"message": "Sync Naver Reservation Failed"}
             httpStatus = 500
         finally:
-            driver.close()
+            if driver is not None:
+                driver.close()
         
         return res, httpStatus
 
@@ -206,7 +207,7 @@ class GetNaverReservation(Resource):
     @sync_ns.response(500, 'Internal Server Error', sync_out_error_response_model)
     def post(self):
         """네이버 예약 정보 조회 (N개월치 예약 내역)"""
-        driver = chromeDriver.ChromeDriver()
+        driver = None
         res: dict
         httpStatus: int
 
@@ -216,6 +217,7 @@ class GetNaverReservation(Resource):
                 res = {"message": "Invalid Access Key", "data": {}}
                 httpStatus = 401
             else:
+                driver = chromeDriver.ChromeDriver()
                 monthSize = req.get("monthSize", 1)
                 log.info(f"monthSize: {monthSize}")
                 if monthSize == None:
@@ -237,7 +239,8 @@ class GetNaverReservation(Resource):
             res = {"message": f"Get Naver Reservation Failed: {str(e)}"}
             httpStatus = 500
         finally:
-            driver.close()
+            if driver is not None:
+                driver.close()
         
         return res, httpStatus
 

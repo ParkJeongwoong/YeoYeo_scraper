@@ -275,9 +275,6 @@ class TestSyncNaverReservation:
 
     @patch('flaskServer.chromeDriver.ChromeDriver')
     def test_sync_in_invalid_key(self, mock_chrome_driver, client):
-        mock_driver_instance = MagicMock()
-        mock_chrome_driver.return_value = mock_driver_instance
-
         request_data = {
             "activationKey": "wrong_key",
             "targetDatesStr": "2024-09-02",
@@ -293,7 +290,7 @@ class TestSyncNaverReservation:
         assert response.status_code == 401
         result = response.get_json()
         assert result["message"] == "Invalid Access Key"
-        mock_driver_instance.close.assert_called_once()
+        mock_chrome_driver.assert_not_called()
 
     @patch('flaskServer.syncManager.SyncNaver')
     @patch('flaskServer.chromeDriver.ChromeDriver')
@@ -342,6 +339,26 @@ class TestSyncNaverReservation:
         result = response.get_json()
         assert result["successDates"] == ["2024-09-05"]
         mock_sync_naver.assert_called_once_with(mock_driver_instance, "2024-09-05", "Yeohang")
+
+    @patch('flaskServer.chromeDriver.ChromeDriver')
+    def test_sync_in_driver_init_error(self, mock_chrome_driver, client, valid_activation_key):
+        mock_chrome_driver.side_effect = Exception("driver init failed")
+
+        request_data = {
+            "activationKey": valid_activation_key,
+            "targetDatesStr": "2024-09-02",
+            "targetRoom": "Yeoyu"
+        }
+
+        response = client.post(
+            '/sync/in',
+            data=json.dumps(request_data),
+            content_type='application/json'
+        )
+
+        assert response.status_code == 500
+        result = response.get_json()
+        assert result["message"] == "Sync Naver Reservation Failed"
 
 
 class TestGetNaverReservation:
@@ -402,9 +419,6 @@ class TestGetNaverReservation:
 
     @patch('flaskServer.chromeDriver.ChromeDriver')
     def test_sync_out_invalid_key(self, mock_chrome_driver, client):
-        mock_driver_instance = MagicMock()
-        mock_chrome_driver.return_value = mock_driver_instance
-
         request_data = {
             "activationKey": "wrong_key"
         }
@@ -418,7 +432,7 @@ class TestGetNaverReservation:
         assert response.status_code == 401
         result = response.get_json()
         assert result["message"] == "Invalid Access Key"
-        mock_driver_instance.close.assert_called_once()
+        mock_chrome_driver.assert_not_called()
 
     @patch('flaskServer.syncManager.getNaverReservation')
     @patch('flaskServer.chromeDriver.ChromeDriver')
@@ -483,3 +497,22 @@ class TestGetNaverReservation:
 
         assert response.status_code == 200
         mock_get_reservation.assert_called_once_with(mock_driver_instance, 0)
+
+    @patch('flaskServer.chromeDriver.ChromeDriver')
+    def test_sync_out_driver_init_error(self, mock_chrome_driver, client, valid_activation_key):
+        mock_chrome_driver.side_effect = Exception("driver init failed")
+
+        request_data = {
+            "activationKey": valid_activation_key,
+            "monthSize": 1
+        }
+
+        response = client.post(
+            '/sync/out',
+            data=json.dumps(request_data),
+            content_type='application/json'
+        )
+
+        assert response.status_code == 500
+        result = response.get_json()
+        assert result["message"] == "Get Naver Reservation Failed: driver init failed"

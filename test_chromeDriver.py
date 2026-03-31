@@ -147,3 +147,39 @@ class TestChromeDriverLinuxCleanup:
 
         mock_kill.assert_not_called()
         mock_run.assert_not_called()
+
+
+class TestChromeDriverInitialization:
+    def _make_instance(self):
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance.debug_mode = False
+        instance.chrome_profile_path = "/tmp/profile"
+        instance.use_subprocess = False
+        instance.driver = None
+        instance._closed = False
+        instance._cleanup_metadata = {}
+        instance.options = MagicMock(arguments=["--headless=new"])
+        return instance
+
+    def test_get_driver_keeps_browser_when_language_overrides_fail(self):
+        instance = self._make_instance()
+        options = MagicMock()
+        browser = MagicMock()
+
+        with patch("chromeDriver.uc.Chrome", return_value=browser) as mock_uc_chrome, patch.object(
+            instance, "_capture_cleanup_metadata", return_value={"servicePort": 1234}
+        ) as mock_capture, patch.object(
+            instance, "_applyLanguageOverrides", side_effect=RuntimeError("cdp failed")
+        ) as mock_apply:
+            result = instance.getDriver(options)
+
+        assert result is browser
+        assert instance._cleanup_metadata == {"servicePort": 1234}
+        mock_uc_chrome.assert_called_once_with(
+            options=options,
+            use_subprocess=False,
+            version_main=146,
+        )
+        mock_capture.assert_called_once_with(browser)
+        mock_apply.assert_called_once_with(browser)
+        browser.quit.assert_not_called()

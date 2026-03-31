@@ -83,15 +83,9 @@ class ChromeDriver(driver.Driver):
         try:
             self._applyLanguageOverrides(browser)
         except Exception:
-            logger.exception("Failed to initialize Chrome driver runtime")
-            try:
-                browser.quit()
-            except Exception:
-                logger.exception(
-                    "Chrome driver quit failed during initialization rollback"
-                )
-            self._cleanup_linux_processes()
-            raise
+            logger.exception(
+                "Failed to apply Chrome language overrides; continuing with browser defaults"
+            )
         return browser
 
     def _capture_cleanup_metadata(self, browser) -> dict:
