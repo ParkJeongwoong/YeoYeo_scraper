@@ -31,6 +31,12 @@ class ChromeDriver(driver.Driver):
     TRUE_ENV_VALUES = ("1", "true", "yes", "on")
     DISPLAY_ENV_VARS = ("DISPLAY", "WAYLAND_DISPLAY")
     USER_DATA_DIR_ARGUMENT_PREFIX = "--user-data-dir="
+    STALE_PROFILE_FILES = (
+        "SingletonLock",
+        "SingletonSocket",
+        "SingletonCookie",
+        "DevToolsActivePort",
+    )
 
     def __init__(self):
         self.debug_mode = self._get_bool_env("DEBUG_MODE")
@@ -38,6 +44,7 @@ class ChromeDriver(driver.Driver):
         self.use_subprocess = self._get_bool_env("UC_USE_SUBPROCESS", default=True)
         self.has_display_server = self._has_display_server()
         self.run_headless = self._should_run_headless()
+        self.active_chrome_profile_path = None
         self.driver = None
         self._closed = False
         self._cleanup_metadata = {}
@@ -66,6 +73,7 @@ class ChromeDriver(driver.Driver):
 
     def _buildOptions(self, include_profile: bool) -> uc.ChromeOptions:
         options = uc.ChromeOptions()
+        profile_path = self._resolve_profile_path(include_profile)
 
         # headless 옵션 설정 (디버그 모드에서는 비활성화)
         if self.run_headless:
@@ -83,21 +91,51 @@ class ChromeDriver(driver.Driver):
         # 불필요한 에러메시지 노출 방지
         options.add_argument("--log-level=3")
 
-        if include_profile and self.chrome_profile_path:
+        if profile_path:
             options.add_argument(
-                f"{self.USER_DATA_DIR_ARGUMENT_PREFIX}{self.chrome_profile_path}"
+                f"{self.USER_DATA_DIR_ARGUMENT_PREFIX}{profile_path}"
             )
 
         return options
 
+    def _resolve_profile_path(self, include_profile: bool):
+        if not include_profile:
+            self.active_chrome_profile_path = None
+            return None
+
+        if not self.chrome_profile_path:
+            self.active_chrome_profile_path = None
+            return None
+
+        self._cleanup_stale_profile_files(self.chrome_profile_path)
+        self.active_chrome_profile_path = self.chrome_profile_path
+        return self.chrome_profile_path
+
+    def _cleanup_stale_profile_files(self, profile_path: str):
+        if not profile_path or not os.path.isdir(profile_path):
+            return
+        for file_name in self.STALE_PROFILE_FILES:
+            target_path = os.path.join(profile_path, file_name)
+            try:
+                if os.path.lexists(target_path):
+                    os.remove(target_path)
+                    logger.info("Removed stale Chrome profile file: %s", target_path)
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logger.exception(
+                    "Failed to remove stale Chrome profile file: %s", target_path
+                )
+
     def getDriver(self, options) -> uc.Chrome:
         logger.info(
-            "Starting Chrome driver with debugMode=%s headless=%s useSubprocess=%s hasDisplayServer=%s profile=%s",
+            "Starting Chrome driver with debugMode=%s headless=%s useSubprocess=%s hasDisplayServer=%s profile=%s activeProfile=%s",
             self.debug_mode,
             self.run_headless,
             self.use_subprocess,
             self.has_display_server,
             self.chrome_profile_path,
+            self.active_chrome_profile_path,
         )
         try:
             browser = self._startBrowser(options)
@@ -153,7 +191,8 @@ class ChromeDriver(driver.Driver):
             "headless": self.run_headless,
             "useSubprocess": self.use_subprocess,
             "hasDisplayServer": self.has_display_server,
-            "chromeProfilePath": self.chrome_profile_path,
+            "configuredChromeProfilePath": self.chrome_profile_path,
+            "chromeProfilePath": self.active_chrome_profile_path,
             "servicePath": service_path,
             "servicePort": service_port,
             "servicePid": service_pid,

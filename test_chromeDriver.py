@@ -11,6 +11,7 @@ class TestChromeDriverClose:
         instance.has_display_server = debug_mode
         instance.run_headless = not debug_mode
         instance.chrome_profile_path = "/tmp/profile"
+        instance.active_chrome_profile_path = "/tmp/profile"
         instance.use_subprocess = False
         instance.driver = driver
         instance._closed = False
@@ -83,6 +84,7 @@ class TestChromeDriverLinuxCleanup:
         instance.has_display_server = False
         instance.run_headless = True
         instance.chrome_profile_path = metadata.get("chromeProfilePath")
+        instance.active_chrome_profile_path = metadata.get("chromeProfilePath")
         instance.use_subprocess = False
         instance.driver = None
         instance._closed = False
@@ -160,6 +162,7 @@ class TestChromeDriverInitialization:
         instance.has_display_server = False
         instance.run_headless = True
         instance.chrome_profile_path = "/tmp/profile"
+        instance.active_chrome_profile_path = "/tmp/profile"
         instance.use_subprocess = False
         instance.driver = None
         instance._closed = False
@@ -250,6 +253,7 @@ class TestChromeDriverOptions:
         instance.has_display_server = False
         instance.run_headless = True
         instance.chrome_profile_path = None
+        instance.active_chrome_profile_path = None
         return instance
 
     def test_build_options_uses_stable_startup_language_without_prefs(self):
@@ -259,3 +263,52 @@ class TestChromeDriverOptions:
 
         assert f"--lang={ChromeDriver.STARTUP_LANGUAGE}" in options.arguments
         assert "prefs" not in options.experimental_options
+
+
+class TestChromeDriverProfiles:
+    def _make_instance(self):
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance.debug_mode = False
+        instance.has_display_server = False
+        instance.run_headless = True
+        instance.chrome_profile_path = "/tmp/profile"
+        instance.active_chrome_profile_path = None
+        return instance
+
+    def test_resolve_profile_path_uses_direct_profile_and_cleans_stale_files(self):
+        instance = self._make_instance()
+        with patch.object(instance, "_cleanup_stale_profile_files") as mock_cleanup:
+            result = instance._resolve_profile_path(include_profile=True)
+
+        assert result == "/tmp/profile"
+        assert instance.active_chrome_profile_path == "/tmp/profile"
+        mock_cleanup.assert_called_once_with("/tmp/profile")
+
+    def test_resolve_profile_path_returns_none_when_profile_is_disabled(self):
+        instance = self._make_instance()
+
+        result = instance._resolve_profile_path(include_profile=False)
+
+        assert result is None
+        assert instance.active_chrome_profile_path is None
+
+    def test_cleanup_stale_profile_files_removes_only_known_stale_files(self, tmp_path):
+        instance = self._make_instance()
+        profile_dir = tmp_path / "profile"
+        profile_dir.mkdir()
+        removed_candidates = {
+            "SingletonLock",
+            "SingletonSocket",
+            "SingletonCookie",
+            "DevToolsActivePort",
+        }
+        for file_name in removed_candidates:
+            (profile_dir / file_name).write_text("stale", encoding="utf-8")
+        keep_file = profile_dir / "Preferences"
+        keep_file.write_text("keep", encoding="utf-8")
+
+        instance._cleanup_stale_profile_files(str(profile_dir))
+
+        for file_name in removed_candidates:
+            assert not (profile_dir / file_name).exists()
+        assert keep_file.exists()
