@@ -241,3 +241,21 @@ class TestChromeDriverRuntimeFlags:
         instance = self._make_instance()
         with patch("chromeDriver.os.getenv", return_value=None):
             assert instance._get_bool_env("UC_USE_SUBPROCESS", default=True) is True
+
+
+class TestChromeDriverOptions:
+    def _make_instance(self):
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance.debug_mode = False
+        instance.has_display_server = False
+        instance.run_headless = True
+        instance.chrome_profile_path = None
+        return instance
+
+    def test_build_options_uses_stable_startup_language_without_prefs(self):
+        instance = self._make_instance()
+
+        options = instance._buildOptions(include_profile=False)
+
+        assert f"--lang={ChromeDriver.STARTUP_LANGUAGE}" in options.arguments
+        assert "prefs" not in options.experimental_options

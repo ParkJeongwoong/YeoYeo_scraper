@@ -27,6 +27,7 @@ class ChromeDriver(driver.Driver):
     BROWSER_LANGUAGE = "ko-KR"
     ACCEPT_LANGUAGES = "ko-KR,ko,en-US,en"
     CDP_LOCALE = "ko_KR"
+    STARTUP_LANGUAGE = "ko_KR"
     TRUE_ENV_VALUES = ("1", "true", "yes", "on")
     DISPLAY_ENV_VARS = ("DISPLAY", "WAYLAND_DISPLAY")
     USER_DATA_DIR_ARGUMENT_PREFIX = "--user-data-dir="
@@ -77,11 +78,7 @@ class ChromeDriver(driver.Driver):
 
         # 사람처럼 보이게 하는 옵션들
         options.add_argument("--disable-gpu")
-        options.add_argument(f"--lang={self.BROWSER_LANGUAGE}")
-        options.add_experimental_option(
-            "prefs",
-            {"intl.accept_languages": self.ACCEPT_LANGUAGES},
-        )
+        options.add_argument(f"--lang={self.STARTUP_LANGUAGE}")
 
         # 불필요한 에러메시지 노출 방지
         options.add_argument("--log-level=3")

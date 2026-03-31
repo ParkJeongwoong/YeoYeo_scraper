@@ -57,7 +57,6 @@ pageStateSelectors = {
     "simpleManagementTable": 'div[class*="SimpleManagement__management-tbody"]',
 }
 securityKeywords = [
-    "로그인",
     "인증",
     "보안",
     "차단",
@@ -65,7 +64,6 @@ securityKeywords = [
     "captcha",
     "2단계",
     "본인확인",
-    "전화",
 ]
 
 
