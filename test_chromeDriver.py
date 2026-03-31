@@ -32,6 +32,7 @@ class TestChromeDriverClose:
         browser.quit.assert_called_once()
         mock_cleanup.assert_not_called()
         assert instance.driver is None
+        assert instance._closed is True
 
     def test_close_runs_fallback_when_quit_fails(self):
         browser = MagicMock()
@@ -44,6 +45,7 @@ class TestChromeDriverClose:
         browser.quit.assert_called_once()
         mock_cleanup.assert_called_once()
         assert instance.driver is None
+        assert instance._closed is True
 
     def test_close_skips_cleanup_in_debug_mode(self):
         browser = MagicMock()
@@ -54,7 +56,22 @@ class TestChromeDriverClose:
 
         browser.quit.assert_not_called()
         mock_cleanup.assert_not_called()
-        assert instance.driver is None
+        assert instance.driver is browser
+        assert instance._closed is False
+
+    def test_close_keeps_driver_available_for_retry_when_quit_fails_without_fallback(self):
+        browser = MagicMock()
+        browser.quit.side_effect = RuntimeError("tab crashed")
+        instance = self._make_instance(driver=browser)
+
+        with patch.object(instance, "_cleanup_linux_processes", return_value=False) as mock_cleanup:
+            instance.close()
+            instance.close()
+
+        assert browser.quit.call_count == 2
+        assert mock_cleanup.call_count == 2
+        assert instance.driver is browser
+        assert instance._closed is False
 
 
 class TestChromeDriverLinuxCleanup:

@@ -158,11 +158,10 @@ Object.defineProperty(navigator, 'languages', {{
         if self._closed:
             return
 
-        self._closed = True
         browser = self.driver
-        self.driver = None
 
         if browser is None:
+            self._closed = True
             return
 
         if self.debug_mode:
@@ -177,11 +176,17 @@ Object.defineProperty(navigator, 'languages', {{
         except Exception:
             logger.exception("Chrome driver quit failed; starting Linux fallback cleanup")
         finally:
-            if not quit_succeeded:
+            if quit_succeeded:
+                self.driver = None
+                self._closed = True
+            else:
                 fallback_used = self._cleanup_linux_processes()
                 logger.info(
                     "Chrome driver fallback cleanup executed: %s", fallback_used
                 )
+                if fallback_used:
+                    self.driver = None
+                    self._closed = True
 
     def _cleanup_linux_processes(self) -> bool:
         if platform.system() != "Linux":
