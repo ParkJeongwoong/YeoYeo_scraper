@@ -172,7 +172,7 @@ class TestChromeDriverInitialization:
         options = MagicMock()
         browser = MagicMock()
 
-        with patch("chromeDriver.uc.Chrome", return_value=browser) as mock_uc_chrome, patch.object(
+        with patch.object(instance, "_startBrowser", return_value=browser) as mock_start_browser, patch.object(
             instance, "_capture_cleanup_metadata", return_value={"servicePort": 1234}
         ) as mock_capture, patch.object(
             instance, "_applyLanguageOverrides", side_effect=RuntimeError("cdp failed")
@@ -181,14 +181,39 @@ class TestChromeDriverInitialization:
 
         assert result is browser
         assert instance._cleanup_metadata == {"servicePort": 1234}
-        mock_uc_chrome.assert_called_once_with(
-            options=options,
-            use_subprocess=False,
-            version_main=146,
-        )
+        mock_start_browser.assert_called_once_with(options)
         mock_capture.assert_called_once_with(browser)
         mock_apply.assert_called_once_with(browser)
         browser.quit.assert_not_called()
+
+    def test_get_driver_retries_without_profile_when_profile_start_fails(self):
+        instance = self._make_instance()
+        initial_options = MagicMock()
+        browser = MagicMock()
+
+        with patch.object(
+            instance,
+            "_startBrowser",
+            side_effect=[RuntimeError("profile locked"), browser],
+        ) as mock_start_browser, patch.object(
+            instance, "_capture_cleanup_metadata", return_value={"servicePort": 1234}
+        ) as mock_capture, patch.object(
+            instance, "_applyLanguageOverrides"
+        ) as mock_apply:
+            result = instance.getDriver(initial_options)
+
+        retry_options = mock_start_browser.call_args_list[1].args[0]
+        assert result is browser
+        assert instance.options is retry_options
+        assert instance._cleanup_metadata == {"servicePort": 1234}
+        assert retry_options is not initial_options
+        assert all(
+            not argument.startswith(ChromeDriver.USER_DATA_DIR_ARGUMENT_PREFIX)
+            for argument in retry_options.arguments
+        )
+        assert mock_start_browser.call_count == 2
+        mock_capture.assert_called_once_with(browser)
+        mock_apply.assert_called_once_with(browser)
 
 
 class TestChromeDriverRuntimeFlags:

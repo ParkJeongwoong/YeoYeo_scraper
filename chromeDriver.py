@@ -29,6 +29,7 @@ class ChromeDriver(driver.Driver):
     CDP_LOCALE = "ko_KR"
     TRUE_ENV_VALUES = ("1", "true", "yes", "on")
     DISPLAY_ENV_VARS = ("DISPLAY", "WAYLAND_DISPLAY")
+    USER_DATA_DIR_ARGUMENT_PREFIX = "--user-data-dir="
 
     def __init__(self):
         self.debug_mode = self._get_bool_env("DEBUG_MODE")
@@ -60,6 +61,9 @@ class ChromeDriver(driver.Driver):
         return False
 
     def getOptions(self) -> uc.ChromeOptions:
+        return self._buildOptions(include_profile=True)
+
+    def _buildOptions(self, include_profile: bool) -> uc.ChromeOptions:
         options = uc.ChromeOptions()
 
         # headless 옵션 설정 (디버그 모드에서는 비활성화)
@@ -82,8 +86,10 @@ class ChromeDriver(driver.Driver):
         # 불필요한 에러메시지 노출 방지
         options.add_argument("--log-level=3")
 
-        if self.chrome_profile_path:
-            options.add_argument(f"--user-data-dir={self.chrome_profile_path}")
+        if include_profile and self.chrome_profile_path:
+            options.add_argument(
+                f"{self.USER_DATA_DIR_ARGUMENT_PREFIX}{self.chrome_profile_path}"
+            )
 
         return options
 
@@ -96,11 +102,19 @@ class ChromeDriver(driver.Driver):
             self.has_display_server,
             self.chrome_profile_path,
         )
-        browser = uc.Chrome(
-            options=options,
-            use_subprocess=self.use_subprocess,
-            version_main=146,
-        )
+        try:
+            browser = self._startBrowser(options)
+        except Exception:
+            if not self.chrome_profile_path:
+                raise
+
+            logger.exception(
+                "Chrome start failed with configured profile; retrying without profile"
+            )
+            retry_options = self._buildOptions(include_profile=False)
+            self.options = retry_options
+            browser = self._startBrowser(retry_options)
+
         self._cleanup_metadata = self._capture_cleanup_metadata(browser)
         logger.info("Chrome driver started: %s", self._cleanup_metadata)
         try:
@@ -110,6 +124,13 @@ class ChromeDriver(driver.Driver):
                 "Failed to apply Chrome language overrides; continuing with browser defaults"
             )
         return browser
+
+    def _startBrowser(self, options) -> uc.Chrome:
+        return uc.Chrome(
+            options=options,
+            use_subprocess=self.use_subprocess,
+            version_main=146,
+        )
 
     def _capture_cleanup_metadata(self, browser) -> dict:
         service = getattr(browser, "service", None)
