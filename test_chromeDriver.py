@@ -8,6 +8,8 @@ class TestChromeDriverClose:
     def _make_instance(self, driver=None, debug_mode=False):
         instance = ChromeDriver.__new__(ChromeDriver)
         instance.debug_mode = debug_mode
+        instance.has_display_server = debug_mode
+        instance.run_headless = not debug_mode
         instance.chrome_profile_path = "/tmp/profile"
         instance.use_subprocess = False
         instance.driver = driver
@@ -78,6 +80,8 @@ class TestChromeDriverLinuxCleanup:
     def _make_instance(self, metadata):
         instance = ChromeDriver.__new__(ChromeDriver)
         instance.debug_mode = False
+        instance.has_display_server = False
+        instance.run_headless = True
         instance.chrome_profile_path = metadata.get("chromeProfilePath")
         instance.use_subprocess = False
         instance.driver = None
@@ -153,6 +157,8 @@ class TestChromeDriverInitialization:
     def _make_instance(self):
         instance = ChromeDriver.__new__(ChromeDriver)
         instance.debug_mode = False
+        instance.has_display_server = False
+        instance.run_headless = True
         instance.chrome_profile_path = "/tmp/profile"
         instance.use_subprocess = False
         instance.driver = None
@@ -183,3 +189,30 @@ class TestChromeDriverInitialization:
         mock_capture.assert_called_once_with(browser)
         mock_apply.assert_called_once_with(browser)
         browser.quit.assert_not_called()
+
+
+class TestChromeDriverRuntimeFlags:
+    def _make_instance(self, debug_mode=False, has_display_server=False):
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance.debug_mode = debug_mode
+        instance.has_display_server = has_display_server
+        return instance
+
+    def test_should_run_headless_when_debug_mode_is_disabled(self):
+        instance = self._make_instance(debug_mode=False, has_display_server=True)
+        assert instance._should_run_headless() is True
+
+    def test_should_run_headless_on_linux_without_display(self):
+        instance = self._make_instance(debug_mode=True, has_display_server=False)
+        with patch("chromeDriver.platform.system", return_value="Linux"):
+            assert instance._should_run_headless() is True
+
+    def test_should_not_run_headless_in_debug_mode_with_display(self):
+        instance = self._make_instance(debug_mode=True, has_display_server=True)
+        with patch("chromeDriver.platform.system", return_value="Linux"):
+            assert instance._should_run_headless() is False
+
+    def test_get_bool_env_uses_default_when_variable_is_missing(self):
+        instance = self._make_instance()
+        with patch("chromeDriver.os.getenv", return_value=None):
+            assert instance._get_bool_env("UC_USE_SUBPROCESS", default=True) is True

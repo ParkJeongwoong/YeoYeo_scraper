@@ -27,16 +27,15 @@ class ChromeDriver(driver.Driver):
     BROWSER_LANGUAGE = "ko-KR"
     ACCEPT_LANGUAGES = "ko-KR,ko,en-US,en"
     CDP_LOCALE = "ko_KR"
+    TRUE_ENV_VALUES = ("1", "true", "yes", "on")
+    DISPLAY_ENV_VARS = ("DISPLAY", "WAYLAND_DISPLAY")
 
     def __init__(self):
-        self.debug_mode = os.getenv("DEBUG_MODE", "False").lower() == "true"
+        self.debug_mode = self._get_bool_env("DEBUG_MODE")
         self.chrome_profile_path = os.getenv("CHROME_PROFILE_PATH")
-        self.use_subprocess = os.getenv("UC_USE_SUBPROCESS", "").lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+        self.use_subprocess = self._get_bool_env("UC_USE_SUBPROCESS", default=True)
+        self.has_display_server = self._has_display_server()
+        self.run_headless = self._should_run_headless()
         self.driver = None
         self._closed = False
         self._cleanup_metadata = {}
@@ -44,11 +43,27 @@ class ChromeDriver(driver.Driver):
         self.driver = self.getDriver(self.options)
         self.driver.implicitly_wait(0)
 
+    def _get_bool_env(self, name: str, default: bool = False) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value.strip().lower() in self.TRUE_ENV_VALUES
+
+    def _has_display_server(self) -> bool:
+        return any(os.getenv(name) for name in self.DISPLAY_ENV_VARS)
+
+    def _should_run_headless(self) -> bool:
+        if not self.debug_mode:
+            return True
+        if platform.system() == "Linux" and not self.has_display_server:
+            return True
+        return False
+
     def getOptions(self) -> uc.ChromeOptions:
         options = uc.ChromeOptions()
 
         # headless 옵션 설정 (디버그 모드에서는 비활성화)
-        if not self.debug_mode:
+        if self.run_headless:
             options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -73,6 +88,14 @@ class ChromeDriver(driver.Driver):
         return options
 
     def getDriver(self, options) -> uc.Chrome:
+        logger.info(
+            "Starting Chrome driver with debugMode=%s headless=%s useSubprocess=%s hasDisplayServer=%s profile=%s",
+            self.debug_mode,
+            self.run_headless,
+            self.use_subprocess,
+            self.has_display_server,
+            self.chrome_profile_path,
+        )
         browser = uc.Chrome(
             options=options,
             use_subprocess=self.use_subprocess,
@@ -109,7 +132,9 @@ class ChromeDriver(driver.Driver):
 
         return {
             "debugMode": self.debug_mode,
+            "headless": self.run_headless,
             "useSubprocess": self.use_subprocess,
+            "hasDisplayServer": self.has_display_server,
             "chromeProfilePath": self.chrome_profile_path,
             "servicePath": service_path,
             "servicePort": service_port,
@@ -158,7 +183,7 @@ Object.defineProperty(navigator, 'languages', {{
             self._closed = True
             return
 
-        if self.debug_mode:
+        if self.debug_mode and self.has_display_server:
             logger.info("Skipping Chrome driver close because DEBUG_MODE is enabled")
             return
 
