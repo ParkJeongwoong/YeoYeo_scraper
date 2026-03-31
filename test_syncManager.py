@@ -1,6 +1,7 @@
 import pytest
 import datetime
 from unittest.mock import Mock, MagicMock, patch
+import bookingListExtractor
 from syncManager import (
     makeTargetDateList,
     makeTargetDate,
@@ -209,7 +210,7 @@ class TestGetNaverReservation:
             {
                 "reservationNumber": "12345",
                 "startDate": future_date_str,
-                "status": "예약확정",
+                "status": "confirmed",
             }
         ]
 
@@ -245,7 +246,7 @@ class TestGetNaverReservation:
             {
                 "reservationNumber": f"1234{i}",
                 "startDate": future_date_str,
-                "status": "예약확정",
+                "status": "confirmed",
             }
             for i in range(3)
         ]
@@ -266,9 +267,10 @@ class TestGetNaverReservation:
     ):
         mock_driver = MagicMock()
         mock_driver.findBySelector.return_value.click = MagicMock()
+        empty_state_text = bookingListExtractor.EMPTY_BOOKING_LIST_MARKERS[0]
         mock_driver.getPageSource.side_effect = [
             "<html><body><a class=\"BookingListView__contents-user\"></a></body></html>",
-            "<html><body><div>예약0건</div><div>조회된 예약내역이 없습니다.</div></body></html>",
+            f"<html><body><div>{empty_state_text}</div></body></html>",
         ]
         mock_driver.findByXpath.return_value = MagicMock()
         mock_driver.getBrowserInfo.return_value = {}
@@ -283,7 +285,7 @@ class TestGetNaverReservation:
                 {
                     "reservationNumber": "12345",
                     "startDate": future_date_str,
-                    "status": "?덉빟?뺤젙",
+                    "status": "confirmed",
                 }
             ],
             [],
@@ -318,7 +320,7 @@ class TestGetNaverReservation:
             {
                 "reservationNumber": "12345",
                 "startDate": future_date_str,
-                "status": "예약확정",
+                "status": "confirmed",
             },
             {
                 "reservationNumber": "67890",
@@ -332,7 +334,7 @@ class TestGetNaverReservation:
         not_canceled, all_bookings = result
         assert len(all_bookings) == 2
         assert len(not_canceled) == 1
-        assert not_canceled[0]["status"] == "예약확정"
+        assert not_canceled[0]["status"] == "confirmed"
 
     @patch("syncManager.id", "test_id")
     @patch("syncManager.pw", "test_pw")
@@ -358,19 +360,19 @@ class TestGetNaverReservation:
                 {
                     "reservationNumber": "12345",
                     "startDate": future_date_str,
-                    "status": "예약확정",
+                "status": "confirmed",
                 }
             ],
             [
                 {
                     "reservationNumber": "12345",
                     "startDate": future_date_str,
-                    "status": "예약확정",
+                "status": "confirmed",
                 },
                 {
                     "reservationNumber": "67890",
                     "startDate": future_date_str,
-                    "status": "예약확정",
+                "status": "confirmed",
                 },
             ],
         ]
@@ -407,12 +409,12 @@ class TestGetNaverReservation:
             {
                 "reservationNumber": "12345",
                 "startDate": past_date,
-                "status": "예약확정",
+                "status": "confirmed",
             },
             {
                 "reservationNumber": "67890",
                 "startDate": future_date,
-                "status": "예약확정",
+                "status": "confirmed",
             },
         ]
 
@@ -464,12 +466,13 @@ class TestGetNaverReservation:
 class TestWaitForBookingListDom:
     def test_accepts_empty_state_without_ready_selectors(self):
         mock_driver = MagicMock()
+        empty_state_text = bookingListExtractor.EMPTY_BOOKING_LIST_MARKERS[0]
 
         def execute_script(script, *args):
             if "querySelectorAll" in script:
                 return 0
             if "document.body ? document.body.innerText" in script:
-                return "예약0건 조회된 예약내역이 없습니다."
+                return empty_state_text
             if "document.readyState" in script:
                 return "complete"
             return None
@@ -495,3 +498,56 @@ class TestRoomType:
     def test_room_type_from_string(self):
         assert RoomType["Yeoyu"] == RoomType.Yeoyu
         assert RoomType["Yeohang"] == RoomType.Yeohang
+
+class TestDriverOwnership:
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    @patch("syncManager.bookingListExtractor.extractBookingList")
+    def test_get_naver_reservation_does_not_close_driver_on_success(
+        self, mock_extract, mock_real_sleep, mock_sleep
+    ):
+        mock_driver = MagicMock()
+        mock_driver.findBySelector.return_value.click = MagicMock()
+        mock_driver.getPageSource.return_value = "<html></html>"
+        mock_driver.findByXpath.return_value = MagicMock()
+        mock_driver.getBrowserInfo.return_value = {}
+
+        future_date = datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
+        ) + datetime.timedelta(days=7)
+        future_date_str = future_date.strftime("%Y%m%d")
+        mock_extract.return_value = [
+            {
+                "reservationNumber": "12345",
+                "startDate": future_date_str,
+                "status": "confirmed",
+            }
+        ]
+
+        getNaverReservation(mock_driver, 1)
+
+        mock_driver.close.assert_not_called()
+
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    @patch("syncManager.collectPageDiagnostics")
+    @patch("syncManager.waitForBookingListDom", return_value=None)
+    def test_get_naver_reservation_does_not_close_driver_on_error(
+        self,
+        mock_wait_for_booking_list,
+        mock_collect_diagnostics,
+        mock_real_sleep,
+        mock_sleep,
+    ):
+        mock_driver = MagicMock()
+        mock_driver.findBySelector.return_value.click = MagicMock()
+        mock_driver.getBrowserInfo.return_value = {}
+
+        with pytest.raises(ReservationLookupError):
+            getNaverReservation(mock_driver, 1)
+
+        mock_driver.close.assert_not_called()

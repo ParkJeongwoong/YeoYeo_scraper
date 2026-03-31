@@ -65,7 +65,7 @@ securityKeywords = [
     "captcha",
     "2단계",
     "본인확인",
-    "휴대전화",
+    "전화",
 ]
 
 
@@ -521,8 +521,12 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
     )
     log.info(f"취소 포함 총 예약 수 : {len(bookingList)}")
     log.info(bookingList)
-    driver.close()
-    notCanceledBookingList = list(filter(lambda x: x["status"] != "취소", bookingList))
+    notCanceledBookingList = list(
+        filter(
+            lambda x: str(x.get("status", "")).strip() not in {"취소"},
+            bookingList,
+        )
+    )
     log.info(f"취소 미포함 확정 예약 수 : {len(notCanceledBookingList)}")
     log.info(notCanceledBookingList)
     return notCanceledBookingList, bookingList

@@ -1,18 +1,26 @@
 import driver
-import time
+import logging
 import os
-import undetected_chromedriver as uc
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.by import By
-from selenium.webdriver.remote.webelement import WebElement
-from dotenv import load_dotenv
+import platform
+import signal
+import subprocess
+import time
+from urllib.parse import urlparse
 
 import pyperclip
+import undetected_chromedriver as uc
+from dotenv import load_dotenv
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.remote.webelement import WebElement
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 class ChromeDriver(driver.Driver):
@@ -22,6 +30,16 @@ class ChromeDriver(driver.Driver):
 
     def __init__(self):
         self.debug_mode = os.getenv("DEBUG_MODE", "False").lower() == "true"
+        self.chrome_profile_path = os.getenv("CHROME_PROFILE_PATH")
+        self.use_subprocess = os.getenv("UC_USE_SUBPROCESS", "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        self.driver = None
+        self._closed = False
+        self._cleanup_metadata = {}
         self.options = self.getOptions()
         self.driver = self.getDriver(self.options)
         self.driver.implicitly_wait(0)
@@ -49,36 +67,80 @@ class ChromeDriver(driver.Driver):
         # 불필요한 에러메시지 노출 방지
         options.add_argument("--log-level=3")
 
-        # 크롬 사용자 프로필 재사용
-        chrome_profile_path = os.getenv("CHROME_PROFILE_PATH")
-        if chrome_profile_path:
-            options.add_argument(f"--user-data-dir={chrome_profile_path}")
+        if self.chrome_profile_path:
+            options.add_argument(f"--user-data-dir={self.chrome_profile_path}")
 
         return options
 
     def getDriver(self, options) -> uc.Chrome:
-        driver = uc.Chrome(options=options, use_subprocess=True, version_main=146)
-        self._applyLanguageOverrides(driver)
-        return driver
+        browser = uc.Chrome(
+            options=options,
+            use_subprocess=self.use_subprocess,
+            version_main=146,
+        )
+        self._cleanup_metadata = self._capture_cleanup_metadata(browser)
+        logger.info("Chrome driver started: %s", self._cleanup_metadata)
+        try:
+            self._applyLanguageOverrides(browser)
+        except Exception:
+            logger.exception("Failed to initialize Chrome driver runtime")
+            try:
+                browser.quit()
+            except Exception:
+                logger.exception(
+                    "Chrome driver quit failed during initialization rollback"
+                )
+            self._cleanup_linux_processes()
+            raise
+        return browser
 
-    def _applyLanguageOverrides(self, driver):
+    def _capture_cleanup_metadata(self, browser) -> dict:
+        service = getattr(browser, "service", None)
+        service_process = getattr(service, "process", None)
+        service_url = getattr(service, "service_url", None)
+        if not service_url:
+            command_executor = getattr(browser, "command_executor", None)
+            service_url = getattr(command_executor, "_url", None)
+
+        service_port = None
+        if service_url:
+            try:
+                service_port = urlparse(service_url).port
+            except ValueError:
+                service_port = None
+
+        service_pid = getattr(service_process, "pid", None)
+        browser_pid = getattr(browser, "browser_pid", None)
+        service_path = getattr(service, "path", None)
+
+        return {
+            "debugMode": self.debug_mode,
+            "useSubprocess": self.use_subprocess,
+            "chromeProfilePath": self.chrome_profile_path,
+            "servicePath": service_path,
+            "servicePort": service_port,
+            "servicePid": service_pid,
+            "browserPid": browser_pid,
+        }
+
+    def _applyLanguageOverrides(self, browser):
         language = self.BROWSER_LANGUAGE
         cdpLocale = self.CDP_LOCALE
         languages = self.ACCEPT_LANGUAGES.split(",")
-        userAgent = driver.execute_script("return navigator.userAgent;")
-        platform = driver.execute_script("return navigator.platform;")
+        userAgent = browser.execute_script("return navigator.userAgent;")
+        platform_name = browser.execute_script("return navigator.platform;")
 
-        driver.execute_cdp_cmd("Network.enable", {})
-        driver.execute_cdp_cmd(
+        browser.execute_cdp_cmd("Network.enable", {})
+        browser.execute_cdp_cmd(
             "Network.setUserAgentOverride",
             {
                 "userAgent": userAgent,
                 "acceptLanguage": self.ACCEPT_LANGUAGES,
-                "platform": platform,
+                "platform": platform_name,
             },
         )
-        driver.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": cdpLocale})
-        driver.execute_cdp_cmd(
+        browser.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": cdpLocale})
+        browser.execute_cdp_cmd(
             "Page.addScriptToEvaluateOnNewDocument",
             {
                 "source": f"""
@@ -93,11 +155,116 @@ Object.defineProperty(navigator, 'languages', {{
         )
 
     def close(self):
-        if self.driver:
-            # 디버그 모드에서는 브라우저를 자동으로 닫지 않음
-            if not self.debug_mode:
-                self.driver.quit()
-                self.driver = None
+        if self._closed:
+            return
+
+        self._closed = True
+        browser = self.driver
+        self.driver = None
+
+        if browser is None:
+            return
+
+        if self.debug_mode:
+            logger.info("Skipping Chrome driver close because DEBUG_MODE is enabled")
+            return
+
+        quit_succeeded = False
+        try:
+            browser.quit()
+            quit_succeeded = True
+            logger.info("Chrome driver quit completed successfully")
+        except Exception:
+            logger.exception("Chrome driver quit failed; starting Linux fallback cleanup")
+        finally:
+            if not quit_succeeded:
+                fallback_used = self._cleanup_linux_processes()
+                logger.info(
+                    "Chrome driver fallback cleanup executed: %s", fallback_used
+                )
+
+    def _cleanup_linux_processes(self) -> bool:
+        if platform.system() != "Linux":
+            return False
+
+        metadata = self._cleanup_metadata or {}
+        service_pid = metadata.get("servicePid")
+        browser_pid = metadata.get("browserPid")
+        service_port = metadata.get("servicePort")
+        profile_path = metadata.get("chromeProfilePath")
+
+        attempted = False
+        for pid in (browser_pid, service_pid):
+            attempted = self._signal_pid(pid, signal.SIGTERM) or attempted
+
+        if profile_path and browser_pid is None:
+            attempted = self._pkill_pattern(
+                "TERM", f"--user-data-dir={profile_path}"
+            ) or attempted
+
+        if service_port and service_pid is None:
+            attempted = self._pkill_pattern(
+                "TERM", f"--port={service_port}"
+            ) or attempted
+
+        if attempted:
+            time.sleep(0.5)
+
+        for pid in (browser_pid, service_pid):
+            attempted = self._signal_pid(pid, FORCE_KILL_SIGNAL) or attempted
+
+        if profile_path and browser_pid is None:
+            attempted = self._pkill_pattern(
+                "KILL", f"--user-data-dir={profile_path}"
+            ) or attempted
+
+        if service_port and service_pid is None:
+            attempted = self._pkill_pattern(
+                "KILL", f"--port={service_port}"
+            ) or attempted
+
+        return attempted
+
+    def _signal_pid(self, pid, sig) -> bool:
+        if not pid:
+            return False
+
+        try:
+            os.kill(pid, sig)
+            logger.info("Sent signal %s to pid=%s", sig, pid)
+            return True
+        except ProcessLookupError:
+            return False
+        except Exception:
+            logger.exception("Failed to signal pid=%s with signal=%s", pid, sig)
+            return False
+
+    def _pkill_pattern(self, signal_name: str, pattern: str) -> bool:
+        try:
+            completed = subprocess.run(
+                ["pkill", f"-{signal_name}", "-f", "--", pattern],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if completed.returncode == 0:
+                logger.info(
+                    "Executed pkill fallback with signal=%s pattern=%s",
+                    signal_name,
+                    pattern,
+                )
+                return True
+            return False
+        except FileNotFoundError:
+            logger.exception("pkill is not available for Chrome fallback cleanup")
+            return False
+        except Exception:
+            logger.exception(
+                "Failed to execute pkill fallback with signal=%s pattern=%s",
+                signal_name,
+                pattern,
+            )
+            return False
 
     def goTo(self, url):
         self.driver.get(url)
