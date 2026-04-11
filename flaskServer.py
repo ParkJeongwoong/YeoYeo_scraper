@@ -4,6 +4,11 @@ from flask import Flask, request, send_from_directory, render_template
 from flask_restx import Api, Resource, fields, Namespace
 import syncManager
 import chromeDriver
+from chromeDriver import (
+    create_browser,
+    BrowserStartupError,
+    FDExhaustedError,
+)
 
 from dotenv import load_dotenv
 import datetime
@@ -95,34 +100,48 @@ class SyncNaverReservation(Resource):
     @sync_ns.response(200, 'Success', sync_in_success_response_model)
     @sync_ns.response(401, 'Unauthorized', sync_in_error_response_model)
     @sync_ns.response(500, 'Internal Server Error', sync_in_error_response_model)
+    @sync_ns.response(503, 'Service Unavailable', sync_in_error_response_model)
     def post(self):
         """네이버 예약 상태 변경 (예약 가능/불가능 토글)"""
-        driver = None
-        res: dict
-        httpStatus: int
-
+        req = request.get_json()
+        
+        if checkActivationKey(req) == False:
+            return {"message": "Invalid Access Key", "data": req}, 401
+        
+        targetDatesStr = req.get("targetDatesStr")
+        targetRoom = req["targetRoom"]
+        
         try:
-            req = request.get_json()
-            if checkActivationKey(req) == False:
-                res = {"message": "Invalid Access Key", "data": req}
-                httpStatus = 401
-            else:
-                targetDatesStr = req.get("targetDatesStr")
-                targetRoom = req["targetRoom"]
-                driver = chromeDriver.ChromeDriver()
+            # Use context manager for guaranteed cleanup
+            with create_browser() as driver:
                 log.info(f"targetDatesStr: {targetDatesStr}, targetRoom: {targetRoom}")
                 successDates = syncManager.SyncNaver(driver, targetDatesStr, targetRoom)
-                res = {"message": "Sync Naver Reservation", "successDates": successDates, "data": req}
-                httpStatus = 200
+                return {
+                    "message": "Sync Naver Reservation",
+                    "successDates": successDates,
+                    "data": req
+                }, 200
+        except FDExhaustedError as e:
+            log.error("FD exhausted - cannot start browser", e)
+            return {
+                "message": f"Server resource exhausted: {str(e)}",
+                "data": req
+            }, 503
+        except TimeoutError as e:
+            log.error("Browser slot timeout", e)
+            return {
+                "message": f"Server busy: {str(e)}",
+                "data": req
+            }, 503
+        except BrowserStartupError as e:
+            log.error("Browser startup failed", e)
+            return {
+                "message": f"Browser startup failed: {str(e)}",
+                "data": req
+            }, 500
         except Exception as e:
             log.error("네이버 예약 정보 변경 실패", e)
-            res = {"message": "Sync Naver Reservation Failed"}
-            httpStatus = 500
-        finally:
-            if driver is not None:
-                driver.close()
-        
-        return res, httpStatus
+            return {"message": "Sync Naver Reservation Failed"}, 500
 
 
 booking_model = api.model('Booking', {
@@ -205,44 +224,51 @@ class GetNaverReservation(Resource):
     @sync_ns.response(200, 'Success', sync_out_success_response_model)
     @sync_ns.response(401, 'Unauthorized', sync_out_error_response_model)
     @sync_ns.response(500, 'Internal Server Error', sync_out_error_response_model)
+    @sync_ns.response(503, 'Service Unavailable', sync_out_error_response_model)
     def post(self):
         """네이버 예약 정보 조회 (N개월치 예약 내역)"""
-        driver = None
-        res: dict
-        httpStatus: int
-
+        req = request.get_json()
+        
+        if checkActivationKey(req) == False:
+            return {"message": "Invalid Access Key", "data": {}}, 401
+        
+        monthSize = req.get("monthSize", 1)
+        if monthSize is None:
+            monthSize = 1
+        
         try:
-            req = request.get_json()
-            if checkActivationKey(req) == False:
-                res = {"message": "Invalid Access Key", "data": {}}
-                httpStatus = 401
-            else:
-                driver = chromeDriver.ChromeDriver()
-                monthSize = req.get("monthSize", 1)
+            # Use context manager for guaranteed cleanup
+            with create_browser() as driver:
                 log.info(f"monthSize: {monthSize}")
-                if monthSize == None:
-                    monthSize = 1
                 notCanceledBookingList, allBookingList = syncManager.getNaverReservation(
                     driver, monthSize
                 )
-                res = {
-                    "message": "Sync Naver Reservation",
-                    "notCanceledBookingList": notCanceledBookingList,
-                    "allBookingList": allBookingList,
-                }
-                httpStatus = 200
                 log.info(
                     f"네이버 예약 정보 가져오기 성공(notCanceledBookingList): {notCanceledBookingList}"
                 )
+                return {
+                    "message": "Sync Naver Reservation",
+                    "notCanceledBookingList": notCanceledBookingList,
+                    "allBookingList": allBookingList,
+                }, 200
+        except FDExhaustedError as e:
+            log.error("FD exhausted - cannot start browser", e)
+            return {
+                "message": f"Server resource exhausted: {str(e)}"
+            }, 503
+        except TimeoutError as e:
+            log.error("Browser slot timeout", e)
+            return {
+                "message": f"Server busy: {str(e)}"
+            }, 503
+        except BrowserStartupError as e:
+            log.error("Browser startup failed", e)
+            return {
+                "message": f"Browser startup failed: {str(e)}"
+            }, 500
         except Exception as e:
             log.error("네이버 예약 정보 가져오기 실패", e)
-            res = {"message": f"Get Naver Reservation Failed: {str(e)}"}
-            httpStatus = 500
-        finally:
-            if driver is not None:
-                driver.close()
-        
-        return res, httpStatus
+            return {"message": f"Get Naver Reservation Failed: {str(e)}"}, 500
 
 
 @debug_ns.route('/diagnostics')

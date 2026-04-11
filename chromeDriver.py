@@ -1,10 +1,15 @@
+import atexit
 import driver
 import logging
 import os
 import platform
 import signal
 import subprocess
+import threading
 import time
+import weakref
+from contextlib import contextmanager
+from typing import Optional
 from urllib.parse import urlparse
 
 import pyperclip
@@ -22,6 +27,152 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
+# FD monitoring thresholds
+FD_WARNING_THRESHOLD = int(os.getenv("FD_WARNING_THRESHOLD", "800"))
+FD_CRITICAL_THRESHOLD = int(os.getenv("FD_CRITICAL_THRESHOLD", "950"))
+MAX_CONCURRENT_BROWSERS = int(os.getenv("MAX_CONCURRENT_BROWSERS", "3"))
+
+# Global browser semaphore for concurrency control
+_browser_semaphore = threading.Semaphore(MAX_CONCURRENT_BROWSERS)
+_active_drivers = weakref.WeakSet()
+_driver_lock = threading.Lock()
+
+
+def get_fd_count() -> int:
+    """Get current process file descriptor count (Linux/macOS only)."""
+    if platform.system() == "Windows":
+        return -1
+    try:
+        fd_dir = "/proc/self/fd"
+        if os.path.isdir(fd_dir):
+            return len(os.listdir(fd_dir))
+        # macOS fallback
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        return soft  # Return limit as approximation
+    except Exception:
+        return -1
+
+
+def get_fd_limit() -> int:
+    """Get file descriptor limit (Linux/macOS only)."""
+    if platform.system() == "Windows":
+        return -1
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        return soft
+    except Exception:
+        return -1
+
+
+def log_fd_status(context: str = ""):
+    """Log current FD usage with warning if high."""
+    fd_count = get_fd_count()
+    fd_limit = get_fd_limit()
+    if fd_count < 0:
+        return
+    
+    prefix = f"[{context}] " if context else ""
+    
+    if fd_count >= FD_CRITICAL_THRESHOLD:
+        logger.critical(
+            "%sFD CRITICAL: %d/%d (%.1f%%) - Risk of 'Too many open files' error",
+            prefix, fd_count, fd_limit, (fd_count / fd_limit) * 100
+        )
+    elif fd_count >= FD_WARNING_THRESHOLD:
+        logger.warning(
+            "%sFD WARNING: %d/%d (%.1f%%) - Consider reducing concurrent browsers",
+            prefix, fd_count, fd_limit, (fd_count / fd_limit) * 100
+        )
+    else:
+        logger.info(
+            "%sFD status: %d/%d (%.1f%%)",
+            prefix, fd_count, fd_limit, (fd_count / fd_limit) * 100
+        )
+
+
+def get_active_driver_count() -> int:
+    """Get count of active ChromeDriver instances."""
+    with _driver_lock:
+        return len(_active_drivers)
+
+
+def cleanup_all_drivers():
+    """Emergency cleanup of all tracked drivers."""
+    with _driver_lock:
+        drivers = list(_active_drivers)
+    
+    for driver_instance in drivers:
+        try:
+            driver_instance.close()
+        except Exception:
+            logger.exception("Failed to cleanup driver during emergency shutdown")
+    
+    logger.info("Emergency driver cleanup completed: %d drivers processed", len(drivers))
+
+
+# Register emergency cleanup on process exit
+atexit.register(cleanup_all_drivers)
+
+
+@contextmanager
+def create_browser(timeout: float = 30.0, skip_fd_check: bool = False):
+    """
+    Context manager for safe browser lifecycle management.
+    
+    Features:
+    - Concurrency control via semaphore
+    - Guaranteed cleanup on exit
+    - FD monitoring
+    - Timeout for acquiring browser slot
+    
+    Usage:
+        with create_browser() as driver:
+            driver.goTo("https://example.com")
+            # driver is automatically closed on exit
+    
+    Args:
+        timeout: Max seconds to wait for browser slot (default 30)
+        skip_fd_check: Skip FD availability check (default False)
+    
+    Raises:
+        TimeoutError: If browser slot not available within timeout
+        FDExhaustedError: If FD count is critically high
+        BrowserStartupError: If browser fails to start
+    """
+    acquired = _browser_semaphore.acquire(timeout=timeout)
+    if not acquired:
+        active_count = get_active_driver_count()
+        raise TimeoutError(
+            f"Could not acquire browser slot within {timeout}s. "
+            f"Active browsers: {active_count}/{MAX_CONCURRENT_BROWSERS}"
+        )
+    
+    driver_instance = None
+    try:
+        log_fd_status("create_browser: slot acquired")
+        driver_instance = ChromeDriver(skip_fd_check=skip_fd_check)
+        yield driver_instance
+    finally:
+        if driver_instance is not None:
+            try:
+                driver_instance.close()
+            except Exception:
+                logger.exception("Failed to close browser in context manager")
+        _browser_semaphore.release()
+        log_fd_status("create_browser: slot released")
+
+
+class BrowserStartupError(Exception):
+    """Raised when browser fails to start after all retries."""
+    pass
+
+
+class FDExhaustedError(Exception):
+    """Raised when FD count is critically high."""
+    pass
+
 
 class ChromeDriver(driver.Driver):
     BROWSER_LANGUAGE = "ko-KR"
@@ -38,7 +189,11 @@ class ChromeDriver(driver.Driver):
         "DevToolsActivePort",
     )
 
-    def __init__(self):
+    def __init__(self, skip_fd_check: bool = False):
+        # Pre-flight FD check
+        if not skip_fd_check:
+            self._check_fd_availability()
+        
         self.debug_mode = self._get_bool_env("DEBUG_MODE")
         self.chrome_profile_path = os.getenv("CHROME_PROFILE_PATH")
         self.use_subprocess = self._get_bool_env("UC_USE_SUBPROCESS", default=True)
@@ -48,9 +203,51 @@ class ChromeDriver(driver.Driver):
         self.driver = None
         self._closed = False
         self._cleanup_metadata = {}
-        self.options = self.getOptions()
-        self.driver = self.getDriver(self.options)
-        self.driver.implicitly_wait(0)
+        self._partial_browser = None  # Track partially started browser for cleanup
+        
+        log_fd_status("ChromeDriver.__init__ start")
+        
+        try:
+            self.options = self.getOptions()
+            self.driver = self.getDriver(self.options)
+            self.driver.implicitly_wait(0)
+            
+            # Register this driver for tracking
+            with _driver_lock:
+                _active_drivers.add(self)
+            
+            log_fd_status("ChromeDriver.__init__ complete")
+        except Exception:
+            # Ensure cleanup on init failure
+            self._emergency_cleanup()
+            raise
+    
+    def _check_fd_availability(self):
+        """Check if FD count is safe before starting browser."""
+        fd_count = get_fd_count()
+        if fd_count >= FD_CRITICAL_THRESHOLD:
+            log_fd_status("FD check failed")
+            raise FDExhaustedError(
+                f"File descriptor count ({fd_count}) exceeds critical threshold ({FD_CRITICAL_THRESHOLD}). "
+                "Cannot start new browser. Consider closing existing browsers or increasing ulimit."
+            )
+    
+    def _emergency_cleanup(self):
+        """Clean up any partial resources on initialization failure."""
+        if self._partial_browser is not None:
+            try:
+                self._force_kill_browser(self._partial_browser)
+            except Exception:
+                logger.exception("Failed to cleanup partial browser")
+            finally:
+                self._partial_browser = None
+        
+        if self.driver is not None:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
 
     def _get_bool_env(self, name: str, default: bool = False) -> bool:
         value = os.getenv(name)
@@ -137,21 +334,48 @@ class ChromeDriver(driver.Driver):
             self.chrome_profile_path,
             self.active_chrome_profile_path,
         )
+        
+        browser = None
+        last_exception = None
+        
+        # Attempt 1: With profile (if configured)
         try:
-            browser = self._startBrowser(options)
-        except Exception:
-            if not self.chrome_profile_path:
-                raise
-
+            browser = self._startBrowserSafe(options)
+        except Exception as e:
+            last_exception = e
             logger.exception(
-                "Chrome start failed with configured profile; retrying without profile"
+                "Chrome start failed with configured profile (attempt 1)"
             )
-            retry_options = self._buildOptions(include_profile=False)
-            self.options = retry_options
-            browser = self._startBrowser(retry_options)
+            # CRITICAL: Clean up any partial browser from failed attempt
+            self._cleanup_partial_browser()
+            
+            if not self.chrome_profile_path:
+                raise BrowserStartupError(
+                    f"Chrome failed to start: {e}"
+                ) from e
+        
+        # Attempt 2: Without profile (if first attempt failed and profile was configured)
+        if browser is None and self.chrome_profile_path:
+            logger.info("Retrying Chrome start without profile (attempt 2)")
+            log_fd_status("Before retry without profile")
+            
+            try:
+                retry_options = self._buildOptions(include_profile=False)
+                self.options = retry_options
+                browser = self._startBrowserSafe(retry_options)
+            except Exception as e:
+                # CRITICAL: Clean up any partial browser from failed retry
+                self._cleanup_partial_browser()
+                raise BrowserStartupError(
+                    f"Chrome failed to start after retry: {e}"
+                ) from last_exception
+
+        if browser is None:
+            raise BrowserStartupError("Chrome failed to start: no browser instance created")
 
         self._cleanup_metadata = self._capture_cleanup_metadata(browser)
         logger.info("Chrome driver started: %s", self._cleanup_metadata)
+        
         try:
             self._applyLanguageOverrides(browser)
         except Exception:
@@ -159,6 +383,71 @@ class ChromeDriver(driver.Driver):
                 "Failed to apply Chrome language overrides; continuing with browser defaults"
             )
         return browser
+    
+    def _startBrowserSafe(self, options) -> uc.Chrome:
+        """Start browser with tracking for cleanup on failure."""
+        browser = None
+        try:
+            browser = self._startBrowser(options)
+            self._partial_browser = None  # Success, clear partial tracking
+            return browser
+        except Exception:
+            # Track partial browser for cleanup
+            if browser is not None:
+                self._partial_browser = browser
+            raise
+    
+    def _cleanup_partial_browser(self):
+        """Clean up any partially started browser."""
+        if self._partial_browser is None:
+            return
+        
+        logger.info("Cleaning up partial browser from failed startup")
+        try:
+            self._force_kill_browser(self._partial_browser)
+        except Exception:
+            logger.exception("Failed to cleanup partial browser")
+        finally:
+            self._partial_browser = None
+            log_fd_status("After partial browser cleanup")
+    
+    def _force_kill_browser(self, browser):
+        """Force kill a browser instance and its processes."""
+        if browser is None:
+            return
+        
+        # Try graceful quit first
+        try:
+            browser.quit()
+            return
+        except Exception:
+            logger.debug("Graceful quit failed, attempting force kill")
+        
+        # Extract PIDs before they become unavailable
+        service = getattr(browser, "service", None)
+        service_process = getattr(service, "process", None)
+        service_pid = getattr(service_process, "pid", None)
+        browser_pid = getattr(browser, "browser_pid", None)
+        
+        # Kill processes
+        for pid in (browser_pid, service_pid):
+            if pid:
+                try:
+                    os.kill(pid, FORCE_KILL_SIGNAL)
+                    logger.info("Force killed process pid=%s", pid)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    logger.exception("Failed to kill pid=%s", pid)
+        
+        # Close subprocess pipes if accessible
+        if service_process is not None:
+            for pipe in (service_process.stdin, service_process.stdout, service_process.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
 
     def _startBrowser(self, options) -> uc.Chrome:
         return uc.Chrome(
@@ -234,6 +523,7 @@ Object.defineProperty(navigator, 'languages', {{
         if self._closed:
             return
 
+        log_fd_status("ChromeDriver.close start")
         browser = self.driver
 
         if browser is None:
@@ -250,19 +540,71 @@ Object.defineProperty(navigator, 'languages', {{
             quit_succeeded = True
             logger.info("Chrome driver quit completed successfully")
         except Exception:
-            logger.exception("Chrome driver quit failed; starting Linux fallback cleanup")
+            logger.exception("Chrome driver quit failed; starting fallback cleanup")
         finally:
             if quit_succeeded:
                 self.driver = None
                 self._closed = True
             else:
+                # Try Linux-specific cleanup
                 fallback_used = self._cleanup_linux_processes()
+                
+                # Also try to close subprocess pipes directly
+                self._close_subprocess_pipes(browser)
+                
                 logger.info(
                     "Chrome driver fallback cleanup executed: %s", fallback_used
                 )
-                if fallback_used:
-                    self.driver = None
-                    self._closed = True
+                # Mark as closed even if fallback didn't fully work
+                # to prevent repeated close attempts
+                self.driver = None
+                self._closed = True
+            
+            # Unregister from tracking
+            with _driver_lock:
+                _active_drivers.discard(self)
+            
+            log_fd_status("ChromeDriver.close complete")
+    
+    def _close_subprocess_pipes(self, browser):
+        """Close any open subprocess pipes to prevent FD leaks."""
+        try:
+            service = getattr(browser, "service", None)
+            if service is None:
+                return
+            
+            process = getattr(service, "process", None)
+            if process is None:
+                return
+            
+            for pipe_name in ("stdin", "stdout", "stderr"):
+                pipe = getattr(process, pipe_name, None)
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                        logger.debug("Closed subprocess %s pipe", pipe_name)
+                    except Exception:
+                        pass
+        except Exception:
+            logger.exception("Failed to close subprocess pipes")
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup."""
+        self.close()
+        return False  # Don't suppress exceptions
+    
+    def __del__(self):
+        """Destructor - last resort cleanup."""
+        if not self._closed:
+            logger.warning("ChromeDriver was not properly closed, cleaning up in __del__")
+            try:
+                self.close()
+            except Exception:
+                pass
 
     def _cleanup_linux_processes(self) -> bool:
         if platform.system() != "Linux":
