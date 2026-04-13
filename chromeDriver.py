@@ -9,8 +9,14 @@ import threading
 import time
 import weakref
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, List
 from urllib.parse import urlparse
+
+# fcntl is Linux/Unix only - used for profile locking
+if platform.system() != "Windows":
+    import fcntl
+else:
+    fcntl = None  # type: ignore
 
 import pyperclip
 import undetected_chromedriver as uc
@@ -32,10 +38,18 @@ FD_WARNING_THRESHOLD = int(os.getenv("FD_WARNING_THRESHOLD", "800"))
 FD_CRITICAL_THRESHOLD = int(os.getenv("FD_CRITICAL_THRESHOLD", "950"))
 MAX_CONCURRENT_BROWSERS = int(os.getenv("MAX_CONCURRENT_BROWSERS", "3"))
 
+# Timeout configurations (seconds)
+BROWSER_STARTUP_TIMEOUT = int(os.getenv("BROWSER_STARTUP_TIMEOUT", "60"))
+BROWSER_CLEANUP_TIMEOUT = int(os.getenv("BROWSER_CLEANUP_TIMEOUT", "10"))
+PROCESS_KILL_TIMEOUT = int(os.getenv("PROCESS_KILL_TIMEOUT", "5"))
+PROFILE_LOCK_TIMEOUT = int(os.getenv("PROFILE_LOCK_TIMEOUT", "30"))
+
 # Global browser semaphore for concurrency control
 _browser_semaphore = threading.Semaphore(MAX_CONCURRENT_BROWSERS)
 _active_drivers = weakref.WeakSet()
 _driver_lock = threading.Lock()
+_profile_locks: dict = {}  # profile_path -> (lock_file_handle, lock_file_path)
+_profile_locks_mutex = threading.Lock()
 
 
 def get_fd_count() -> int:
@@ -75,20 +89,27 @@ def log_fd_status(context: str = ""):
     
     prefix = f"[{context}] " if context else ""
     
+    # Guard against division by zero
+    if fd_limit <= 0:
+        logger.debug("%sFD status: count=%d, limit unavailable", prefix, fd_count)
+        return
+    
+    fd_percentage = (fd_count / fd_limit) * 100
+    
     if fd_count >= FD_CRITICAL_THRESHOLD:
         logger.critical(
             "%sFD CRITICAL: %d/%d (%.1f%%) - Risk of 'Too many open files' error",
-            prefix, fd_count, fd_limit, (fd_count / fd_limit) * 100
+            prefix, fd_count, fd_limit, fd_percentage
         )
     elif fd_count >= FD_WARNING_THRESHOLD:
         logger.warning(
             "%sFD WARNING: %d/%d (%.1f%%) - Consider reducing concurrent browsers",
-            prefix, fd_count, fd_limit, (fd_count / fd_limit) * 100
+            prefix, fd_count, fd_limit, fd_percentage
         )
     else:
         logger.info(
             "%sFD status: %d/%d (%.1f%%)",
-            prefix, fd_count, fd_limit, (fd_count / fd_limit) * 100
+            prefix, fd_count, fd_limit, fd_percentage
         )
 
 
@@ -114,6 +135,369 @@ def cleanup_all_drivers():
 
 # Register emergency cleanup on process exit
 atexit.register(cleanup_all_drivers)
+
+
+# =============================================================================
+# Profile Lock Management (fcntl-based for Linux)
+# =============================================================================
+
+class ProfileLockError(Exception):
+    """Raised when profile lock cannot be acquired."""
+    pass
+
+
+def _get_profile_lock_path(profile_path: str) -> str:
+    """Get the lock file path for a profile."""
+    return os.path.join(profile_path, ".profile.lock")
+
+
+def _acquire_profile_lock(profile_path: str, timeout: float = PROFILE_LOCK_TIMEOUT) -> bool:
+    """
+    Acquire exclusive lock on profile directory.
+    Returns True if lock acquired, False if timeout.
+    """
+    if platform.system() == "Windows":
+        logger.debug("Profile locking not supported on Windows, skipping")
+        return True
+    
+    if not profile_path or not os.path.isdir(profile_path):
+        logger.debug("Profile path does not exist, skipping lock: %s", profile_path)
+        return True
+    
+    lock_path = _get_profile_lock_path(profile_path)
+    
+    with _profile_locks_mutex:
+        if profile_path in _profile_locks:
+            logger.warning("Profile lock already held by this process: %s", profile_path)
+            return True
+    
+    start_time = time.time()
+    lock_file = None
+    
+    try:
+        # Create lock file if not exists
+        lock_file = open(lock_path, "w")
+        
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Lock acquired
+                lock_file.write(f"pid={os.getpid()}\ntime={time.time()}\n")
+                lock_file.flush()
+                
+                with _profile_locks_mutex:
+                    _profile_locks[profile_path] = (lock_file, lock_path)
+                
+                logger.info("Profile lock acquired: %s (pid=%d)", profile_path, os.getpid())
+                return True
+                
+            except (IOError, OSError) as e:
+                if e.errno not in (11, 35):  # EAGAIN, EWOULDBLOCK
+                    raise
+                
+                elapsed = time.time() - start_time
+                if elapsed >= timeout:
+                    logger.error(
+                        "Profile lock timeout after %.1fs: %s",
+                        elapsed, profile_path
+                    )
+                    lock_file.close()
+                    return False
+                
+                time.sleep(0.5)
+                
+    except Exception:
+        logger.exception("Failed to acquire profile lock: %s", profile_path)
+        if lock_file:
+            try:
+                lock_file.close()
+            except Exception:
+                pass
+        return False
+
+
+def _release_profile_lock(profile_path: str):
+    """Release profile lock."""
+    if platform.system() == "Windows":
+        return
+    
+    if not profile_path:
+        return
+    
+    with _profile_locks_mutex:
+        lock_info = _profile_locks.pop(profile_path, None)
+    
+    if lock_info is None:
+        logger.debug("No profile lock to release: %s", profile_path)
+        return
+    
+    lock_file, lock_path = lock_info
+    
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+        logger.info("Profile lock released: %s", profile_path)
+    except Exception:
+        logger.exception("Failed to release profile lock: %s", profile_path)
+
+
+# =============================================================================
+# Process Detection and Management
+# =============================================================================
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check if a process with given PID is alive."""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)  # Signal 0 just checks if process exists
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # Process exists but we don't have permission
+    except Exception:
+        return False
+
+
+def _find_processes_using_profile(profile_path: str) -> List[dict]:
+    """
+    Find Chrome/ChromeDriver processes using the given profile path.
+    Returns list of dicts with 'pid', 'cmdline', 'name'.
+    """
+    if platform.system() != "Linux":
+        return []
+    
+    if not profile_path:
+        return []
+    
+    processes = []
+    pattern = f"--user-data-dir={profile_path}"
+    
+    try:
+        # Use pgrep to find matching processes
+        result = subprocess.run(
+            ["pgrep", "-af", pattern],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().split("\n"):
+                parts = line.split(maxsplit=1)
+                if len(parts) >= 1:
+                    try:
+                        pid = int(parts[0])
+                        cmdline = parts[1] if len(parts) > 1 else ""
+                        processes.append({
+                            "pid": pid,
+                            "cmdline": cmdline,
+                            "name": "chrome" if "chrome" in cmdline.lower() else "unknown"
+                        })
+                    except ValueError:
+                        continue
+    except subprocess.TimeoutExpired:
+        logger.warning("pgrep timeout while searching for profile processes")
+    except FileNotFoundError:
+        logger.debug("pgrep not available")
+    except Exception:
+        logger.exception("Failed to find processes using profile")
+    
+    # Note: We intentionally do NOT search for all chromedriver processes here.
+    # Searching "pgrep -af chromedriver" would return ALL chromedriver instances,
+    # including those from other sessions/profiles, which could lead to
+    # unintended termination of unrelated browser sessions.
+    # Chrome processes with --user-data-dir are sufficient for profile-based cleanup.
+    
+    logger.debug("Found %d processes using profile %s: %s", 
+                 len(processes), profile_path, [p["pid"] for p in processes])
+    return processes
+
+
+def _get_child_pids(parent_pid: int) -> List[int]:
+    """Get all child PIDs of a process (Linux only)."""
+    if platform.system() != "Linux":
+        return []
+    
+    children = []
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(parent_pid)],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().split("\n"):
+                try:
+                    children.append(int(line.strip()))
+                except ValueError:
+                    continue
+    except Exception:
+        pass
+    
+    return children
+
+
+def _wait_for_pid_exit(pid: int, timeout: float = PROCESS_KILL_TIMEOUT) -> bool:
+    """
+    Wait for a process to exit.
+    Returns True if process exited, False if timeout.
+    """
+    if not _is_pid_alive(pid):
+        return True
+    
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if not _is_pid_alive(pid):
+            return True
+        time.sleep(0.1)
+    
+    return not _is_pid_alive(pid)
+
+
+def _terminate_process_tree(pid: int, timeout: float = PROCESS_KILL_TIMEOUT) -> bool:
+    """
+    Terminate a process and all its children.
+    First tries SIGTERM, then SIGKILL if needed.
+    Returns True if all processes terminated.
+    """
+    if not _is_pid_alive(pid):
+        logger.debug("Process already dead: pid=%d", pid)
+        return True
+    
+    # Collect all PIDs in the tree
+    all_pids = [pid]
+    children = _get_child_pids(pid)
+    all_pids.extend(children)
+    
+    # Recursively get grandchildren
+    for child in children:
+        all_pids.extend(_get_child_pids(child))
+    
+    all_pids = list(set(all_pids))  # Remove duplicates
+    logger.info("Terminating process tree: root=%d, all_pids=%s", pid, all_pids)
+    
+    # Phase 1: SIGTERM
+    for p in all_pids:
+        try:
+            os.kill(p, signal.SIGTERM)
+            logger.debug("Sent SIGTERM to pid=%d", p)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            logger.debug("Failed to send SIGTERM to pid=%d", p)
+    
+    # Wait for graceful termination using actual timeout
+    term_timeout = min(timeout / 2, 3.0)  # Cap at 3 seconds for SIGTERM phase
+    wait_interval = 0.2
+    elapsed = 0.0
+    
+    while elapsed < term_timeout:
+        still_alive = [p for p in all_pids if _is_pid_alive(p)]
+        if not still_alive:
+            break
+        time.sleep(wait_interval)
+        elapsed += wait_interval
+    
+    still_alive = [p for p in all_pids if _is_pid_alive(p)]
+    
+    if not still_alive:
+        logger.info("All processes terminated gracefully: %s", all_pids)
+        return True
+    
+    # Phase 2: SIGKILL for remaining
+    logger.warning("Processes still alive after SIGTERM, sending SIGKILL: %s", still_alive)
+    for p in still_alive:
+        try:
+            os.kill(p, FORCE_KILL_SIGNAL)
+            logger.debug("Sent SIGKILL to pid=%d", p)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            logger.debug("Failed to send SIGKILL to pid=%d", p)
+    
+    # Final wait
+    time.sleep(0.5)
+    final_alive = [p for p in still_alive if _is_pid_alive(p)]
+    
+    if final_alive:
+        logger.error("Failed to kill processes: %s", final_alive)
+        return False
+    
+    logger.info("All processes terminated after SIGKILL: %s", all_pids)
+    return True
+
+
+def _cleanup_orphan_processes_for_profile(profile_path: str) -> bool:
+    """
+    Find and terminate any orphan Chrome/ChromeDriver processes using the profile.
+    Returns True if cleanup was performed.
+    """
+    if platform.system() != "Linux":
+        return False
+    
+    if not profile_path:
+        return False
+    
+    processes = _find_processes_using_profile(profile_path)
+    
+    if not processes:
+        logger.debug("No orphan processes found for profile: %s", profile_path)
+        return False
+    
+    logger.warning(
+        "Found %d orphan processes for profile %s: %s",
+        len(processes), profile_path, [p["pid"] for p in processes]
+    )
+    
+    all_terminated = True
+    for proc in processes:
+        pid = proc["pid"]
+        if not _terminate_process_tree(pid):
+            all_terminated = False
+    
+    if all_terminated:
+        logger.info("All orphan processes terminated for profile: %s", profile_path)
+    else:
+        logger.error("Some orphan processes could not be terminated for profile: %s", profile_path)
+    
+    return True
+
+
+def _cleanup_profile_artifacts_if_safe(profile_path: str, stale_files: tuple) -> bool:
+    """
+    Clean up stale profile files only if no processes are using the profile.
+    Returns True if cleanup was performed.
+    """
+    if not profile_path or not os.path.isdir(profile_path):
+        return False
+    
+    # Check if any processes are using this profile
+    processes = _find_processes_using_profile(profile_path)
+    
+    if processes:
+        logger.warning(
+            "Cannot clean profile artifacts - %d processes still using profile: %s",
+            len(processes), profile_path
+        )
+        return False
+    
+    cleaned = False
+    for file_name in stale_files:
+        target_path = os.path.join(profile_path, file_name)
+        try:
+            if os.path.lexists(target_path):
+                os.remove(target_path)
+                logger.info("Removed stale profile file: %s (no active processes)", target_path)
+                cleaned = True
+        except FileNotFoundError:
+            continue
+        except Exception:
+            logger.exception("Failed to remove stale profile file: %s", target_path)
+    
+    return cleaned
 
 
 @contextmanager
@@ -204,10 +588,29 @@ class ChromeDriver(driver.Driver):
         self._closed = False
         self._cleanup_metadata = {}
         self._partial_browser = None  # Track partially started browser for cleanup
+        self._profile_lock_acquired = False  # Track if we hold the profile lock
         
         log_fd_status("ChromeDriver.__init__ start")
         
         try:
+            # Step 1: Acquire profile lock (if using profile)
+            # If lock acquisition fails, try cleaning orphan processes first and retry
+            if self.chrome_profile_path:
+                if not self._try_acquire_profile_lock_with_orphan_cleanup():
+                    raise ProfileLockError(
+                        f"Could not acquire profile lock within {PROFILE_LOCK_TIMEOUT}s "
+                        f"(even after orphan cleanup): {self.chrome_profile_path}"
+                    )
+            
+            # Step 2: Clean up stale profile artifacts (only if safe)
+            # Note: Orphan cleanup is now done in _try_acquire_profile_lock_with_orphan_cleanup
+            if self.chrome_profile_path:
+                _cleanup_profile_artifacts_if_safe(
+                    self.chrome_profile_path, 
+                    self.STALE_PROFILE_FILES
+                )
+            
+            # Step 4: Build options and start browser
             self.options = self.getOptions()
             self.driver = self.getDriver(self.options)
             self.driver.implicitly_wait(0)
@@ -222,6 +625,45 @@ class ChromeDriver(driver.Driver):
             self._emergency_cleanup()
             raise
     
+    def _try_acquire_profile_lock_with_orphan_cleanup(self) -> bool:
+        """
+        Try to acquire profile lock. If it fails, clean up orphan processes and retry.
+        Returns True if lock acquired, False otherwise.
+        """
+        if not self.chrome_profile_path:
+            return True
+        
+        # First attempt: try to acquire lock with short timeout
+        short_timeout = min(PROFILE_LOCK_TIMEOUT / 3, 5.0)
+        if _acquire_profile_lock(self.chrome_profile_path, timeout=short_timeout):
+            self._profile_lock_acquired = True
+            return True
+        
+        # Lock acquisition failed - likely orphan process holding it
+        logger.warning(
+            "Profile lock acquisition failed (timeout=%.1fs), attempting orphan cleanup: %s",
+            short_timeout, self.chrome_profile_path
+        )
+        
+        # Clean up orphan processes
+        _cleanup_orphan_processes_for_profile(self.chrome_profile_path)
+        
+        # Wait briefly for processes to fully terminate
+        time.sleep(0.5)
+        
+        # Second attempt: try again with remaining timeout
+        remaining_timeout = PROFILE_LOCK_TIMEOUT - short_timeout - 0.5
+        if remaining_timeout > 0 and _acquire_profile_lock(self.chrome_profile_path, timeout=remaining_timeout):
+            self._profile_lock_acquired = True
+            logger.info("Profile lock acquired after orphan cleanup: %s", self.chrome_profile_path)
+            return True
+        
+        logger.error(
+            "Profile lock acquisition failed even after orphan cleanup: %s",
+            self.chrome_profile_path
+        )
+        return False
+    
     def _check_fd_availability(self):
         """Check if FD count is safe before starting browser."""
         fd_count = get_fd_count()
@@ -234,6 +676,8 @@ class ChromeDriver(driver.Driver):
     
     def _emergency_cleanup(self):
         """Clean up any partial resources on initialization failure."""
+        logger.info("Emergency cleanup triggered")
+        
         if self._partial_browser is not None:
             try:
                 self._force_kill_browser(self._partial_browser)
@@ -248,6 +692,11 @@ class ChromeDriver(driver.Driver):
             except Exception:
                 pass
             self.driver = None
+        
+        # Release profile lock if held
+        if self._profile_lock_acquired and self.chrome_profile_path:
+            _release_profile_lock(self.chrome_profile_path)
+            self._profile_lock_acquired = False
 
     def _get_bool_env(self, name: str, default: bool = False) -> bool:
         value = os.getenv(name)
@@ -296,6 +745,11 @@ class ChromeDriver(driver.Driver):
         return options
 
     def _resolve_profile_path(self, include_profile: bool):
+        """
+        Resolve profile path for browser options.
+        Note: Stale file cleanup is now done in __init__ before browser start,
+        not here, to ensure proper process checking.
+        """
         if not include_profile:
             self.active_chrome_profile_path = None
             return None
@@ -304,25 +758,9 @@ class ChromeDriver(driver.Driver):
             self.active_chrome_profile_path = None
             return None
 
-        self._cleanup_stale_profile_files(self.chrome_profile_path)
+        # Stale file cleanup is already done in __init__ via _cleanup_profile_artifacts_if_safe
         self.active_chrome_profile_path = self.chrome_profile_path
         return self.chrome_profile_path
-
-    def _cleanup_stale_profile_files(self, profile_path: str):
-        if not profile_path or not os.path.isdir(profile_path):
-            return
-        for file_name in self.STALE_PROFILE_FILES:
-            target_path = os.path.join(profile_path, file_name)
-            try:
-                if os.path.lexists(target_path):
-                    os.remove(target_path)
-                    logger.info("Removed stale Chrome profile file: %s", target_path)
-            except FileNotFoundError:
-                continue
-            except Exception:
-                logger.exception(
-                    "Failed to remove stale Chrome profile file: %s", target_path
-                )
 
     def getDriver(self, options) -> uc.Chrome:
         logger.info(
@@ -337,10 +775,11 @@ class ChromeDriver(driver.Driver):
         
         browser = None
         last_exception = None
+        startup_start_time = time.time()
         
         # Attempt 1: With profile (if configured)
         try:
-            browser = self._startBrowserSafe(options)
+            browser = self._startBrowserSafe(options, timeout=BROWSER_STARTUP_TIMEOUT)
         except Exception as e:
             last_exception = e
             logger.exception(
@@ -362,7 +801,7 @@ class ChromeDriver(driver.Driver):
             try:
                 retry_options = self._buildOptions(include_profile=False)
                 self.options = retry_options
-                browser = self._startBrowserSafe(retry_options)
+                browser = self._startBrowserSafe(retry_options, timeout=BROWSER_STARTUP_TIMEOUT)
             except Exception as e:
                 # CRITICAL: Clean up any partial browser from failed retry
                 self._cleanup_partial_browser()
@@ -374,24 +813,90 @@ class ChromeDriver(driver.Driver):
             raise BrowserStartupError("Chrome failed to start: no browser instance created")
 
         self._cleanup_metadata = self._capture_cleanup_metadata(browser)
-        logger.info("Chrome driver started: %s", self._cleanup_metadata)
+        startup_elapsed = time.time() - startup_start_time
+        logger.info(
+            "Chrome driver started in %.1fs: %s", 
+            startup_elapsed, self._cleanup_metadata
+        )
         
+        # Step 5: Startup health check - verify session is actually working
+        if not self._perform_startup_health_check(browser):
+            logger.error("Startup health check failed, cleaning up browser")
+            self._force_kill_browser(browser)
+            raise BrowserStartupError(
+                "Browser started but session health check failed (InvalidSessionIdException or DevTools disconnected)"
+            )
+        
+        # Step 6: Apply language overrides (only after health check passes)
         try:
             self._applyLanguageOverrides(browser)
-        except Exception:
-            logger.exception(
-                "Failed to apply Chrome language overrides; continuing with browser defaults"
-            )
+            logger.debug("Language overrides applied successfully")
+        except Exception as e:
+            # Language override failure after health check is a critical error
+            logger.error("Failed to apply language overrides after health check: %s", e)
+            self._force_kill_browser(browser)
+            raise BrowserStartupError(
+                f"Browser started but language override failed: {e}"
+            ) from e
+        
         return browser
     
-    def _startBrowserSafe(self, options) -> uc.Chrome:
-        """Start browser with tracking for cleanup on failure."""
+    def _perform_startup_health_check(self, browser) -> bool:
+        """
+        Perform startup health check to verify browser session is working.
+        Returns True if healthy, False otherwise.
+        """
+        try:
+            # Simple script execution test
+            result = browser.execute_script("return 1 + 1")
+            if result != 2:
+                logger.warning("Health check: unexpected result %s", result)
+                return False
+            
+            # Verify we can access basic browser properties
+            _ = browser.current_url
+            _ = browser.title
+            
+            logger.info("Startup health check passed")
+            return True
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            if "invalid session" in error_str or "not connected" in error_str:
+                logger.error(
+                    "Startup health check failed with session error: %s "
+                    "(entering forced cleanup path)", e
+                )
+            else:
+                logger.error("Startup health check failed: %s", e)
+            return False
+    
+    def _startBrowserSafe(self, options, timeout: float = BROWSER_STARTUP_TIMEOUT) -> uc.Chrome:
+        """
+        Start browser with tracking for cleanup on failure.
+        Includes timeout monitoring for startup.
+        """
         browser = None
+        start_time = time.time()
+        
         try:
             browser = self._startBrowser(options)
+            
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                logger.warning(
+                    "Browser startup took %.1fs (exceeded timeout of %.1fs)",
+                    elapsed, timeout
+                )
+            
             self._partial_browser = None  # Success, clear partial tracking
             return browser
-        except Exception:
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                "Browser startup failed after %.1fs (timeout=%.1fs): %s",
+                elapsed, timeout, e
+            )
             # Track partial browser for cleanup
             if browser is not None:
                 self._partial_browser = browser
@@ -412,33 +917,47 @@ class ChromeDriver(driver.Driver):
             log_fd_status("After partial browser cleanup")
     
     def _force_kill_browser(self, browser):
-        """Force kill a browser instance and its processes."""
+        """Force kill a browser instance and its processes including children."""
         if browser is None:
             return
         
-        # Try graceful quit first
-        try:
-            browser.quit()
-            return
-        except Exception:
-            logger.debug("Graceful quit failed, attempting force kill")
-        
-        # Extract PIDs before they become unavailable
+        # Extract PIDs before quit attempt (they may become unavailable after)
         service = getattr(browser, "service", None)
         service_process = getattr(service, "process", None)
         service_pid = getattr(service_process, "pid", None)
         browser_pid = getattr(browser, "browser_pid", None)
         
-        # Kill processes
-        for pid in (browser_pid, service_pid):
-            if pid:
-                try:
-                    os.kill(pid, FORCE_KILL_SIGNAL)
-                    logger.info("Force killed process pid=%s", pid)
-                except ProcessLookupError:
-                    pass
-                except Exception:
-                    logger.exception("Failed to kill pid=%s", pid)
+        logger.info(
+            "Force killing browser: browser_pid=%s, service_pid=%s",
+            browser_pid, service_pid
+        )
+        
+        # Try graceful quit first
+        try:
+            browser.quit()
+            # Wait briefly and check if processes actually terminated
+            time.sleep(0.5)
+            browser_alive = _is_pid_alive(browser_pid) if browser_pid else False
+            service_alive = _is_pid_alive(service_pid) if service_pid else False
+            
+            if not browser_alive and not service_alive:
+                logger.info("Browser quit successfully, all processes terminated")
+                return
+            else:
+                logger.warning(
+                    "Browser quit returned but processes still alive: "
+                    "browser_pid=%s (alive=%s), service_pid=%s (alive=%s)",
+                    browser_pid, browser_alive, service_pid, service_alive
+                )
+        except Exception as e:
+            logger.debug("Graceful quit failed: %s, attempting force kill", e)
+        
+        # Force terminate process trees (including children)
+        for name, pid in [("browser", browser_pid), ("service", service_pid)]:
+            if pid and _is_pid_alive(pid):
+                logger.info("Force terminating %s process tree: pid=%d", name, pid)
+                if not _terminate_process_tree(pid, timeout=PROCESS_KILL_TIMEOUT):
+                    logger.error("Failed to terminate %s process tree: pid=%d", name, pid)
         
         # Close subprocess pipes if accessible
         if service_process is not None:
@@ -525,46 +1044,126 @@ Object.defineProperty(navigator, 'languages', {{
 
         log_fd_status("ChromeDriver.close start")
         browser = self.driver
+        cleanup_start_time = time.time()
 
         if browser is None:
             self._closed = True
+            self._release_profile_lock_if_held()
             return
 
         if self.debug_mode and self.has_display_server:
             logger.info("Skipping Chrome driver close because DEBUG_MODE is enabled")
+            self._closed = True
+            self._release_profile_lock_if_held()
             return
 
+        # Capture PIDs before quit attempt (they may become unavailable after)
+        metadata = self._cleanup_metadata or {}
+        browser_pid = metadata.get("browserPid")
+        service_pid = metadata.get("servicePid")
+        
         quit_succeeded = False
         try:
             browser.quit()
             quit_succeeded = True
-            logger.info("Chrome driver quit completed successfully")
-        except Exception:
-            logger.exception("Chrome driver quit failed; starting fallback cleanup")
-        finally:
-            if quit_succeeded:
-                self.driver = None
-                self._closed = True
-            else:
-                # Try Linux-specific cleanup
-                fallback_used = self._cleanup_linux_processes()
-                
-                # Also try to close subprocess pipes directly
-                self._close_subprocess_pipes(browser)
-                
-                logger.info(
-                    "Chrome driver fallback cleanup executed: %s", fallback_used
+            logger.info("Chrome driver quit() returned successfully")
+        except Exception as e:
+            error_str = str(e).lower()
+            if "invalid session" in error_str or "not connected" in error_str:
+                logger.warning(
+                    "Chrome driver quit failed with session error: %s "
+                    "(entering forced cleanup path)", e
                 )
-                # Mark as closed even if fallback didn't fully work
-                # to prevent repeated close attempts
-                self.driver = None
-                self._closed = True
-            
-            # Unregister from tracking
-            with _driver_lock:
-                _active_drivers.discard(self)
-            
-            log_fd_status("ChromeDriver.close complete")
+            else:
+                logger.exception("Chrome driver quit failed; starting fallback cleanup")
+        
+        # Step 1: Verify actual process termination (regardless of quit success)
+        all_terminated = self._verify_and_force_terminate_processes(
+            browser_pid, service_pid, timeout=BROWSER_CLEANUP_TIMEOUT
+        )
+        
+        if not all_terminated:
+            logger.warning(
+                "Some processes still alive after cleanup timeout, forcing kill"
+            )
+            # Force kill any remaining processes
+            self._cleanup_linux_processes()
+        
+        # Step 2: Close subprocess pipes
+        self._close_subprocess_pipes(browser)
+        
+        # Step 3: Final cleanup
+        cleanup_elapsed = time.time() - cleanup_start_time
+        logger.info(
+            "Chrome driver close completed in %.1fs: quit_succeeded=%s, "
+            "browser_pid=%s, service_pid=%s, all_terminated=%s",
+            cleanup_elapsed, quit_succeeded, browser_pid, service_pid, all_terminated
+        )
+        
+        self.driver = None
+        self._closed = True
+        
+        # Unregister from tracking
+        with _driver_lock:
+            _active_drivers.discard(self)
+        
+        # Release profile lock
+        self._release_profile_lock_if_held()
+        
+        log_fd_status("ChromeDriver.close complete")
+    
+    def _release_profile_lock_if_held(self):
+        """Release profile lock if this instance holds it."""
+        if self._profile_lock_acquired and self.chrome_profile_path:
+            _release_profile_lock(self.chrome_profile_path)
+            self._profile_lock_acquired = False
+    
+    def _verify_and_force_terminate_processes(
+        self, 
+        browser_pid: Optional[int], 
+        service_pid: Optional[int],
+        timeout: float = BROWSER_CLEANUP_TIMEOUT
+    ) -> bool:
+        """
+        Verify browser and service processes have terminated.
+        If not, force terminate them.
+        Returns True if all processes are terminated.
+        """
+        pids_to_check = []
+        if browser_pid:
+            pids_to_check.append(("browser", browser_pid))
+        if service_pid:
+            pids_to_check.append(("service", service_pid))
+        
+        if not pids_to_check:
+            logger.debug("No PIDs to verify for termination")
+            return True
+        
+        # First, wait briefly for graceful termination
+        time.sleep(0.5)
+        
+        still_alive = []
+        for name, pid in pids_to_check:
+            if _is_pid_alive(pid):
+                still_alive.append((name, pid))
+                logger.warning("Process still alive after quit: %s (pid=%d)", name, pid)
+        
+        if not still_alive:
+            logger.info(
+                "All processes terminated gracefully: %s",
+                [(name, pid) for name, pid in pids_to_check]
+            )
+            return True
+        
+        # Force terminate remaining processes
+        all_terminated = True
+        for name, pid in still_alive:
+            logger.info("Force terminating %s process tree: pid=%d", name, pid)
+            if not _terminate_process_tree(pid, timeout=timeout):
+                all_terminated = False
+                logger.error("Failed to terminate %s process: pid=%d", name, pid)
+        
+        return all_terminated
     
     def _close_subprocess_pipes(self, browser):
         """Close any open subprocess pipes to prevent FD leaks."""
@@ -600,11 +1199,20 @@ Object.defineProperty(navigator, 'languages', {{
     def __del__(self):
         """Destructor - last resort cleanup."""
         if not self._closed:
-            logger.warning("ChromeDriver was not properly closed, cleaning up in __del__")
+            logger.warning(
+                "ChromeDriver was not properly closed, cleaning up in __del__ "
+                "(profile=%s, browser_pid=%s)",
+                self.chrome_profile_path,
+                self._cleanup_metadata.get("browserPid") if self._cleanup_metadata else None
+            )
             try:
                 self.close()
             except Exception:
-                pass
+                # Last resort: at least try to release profile lock
+                try:
+                    self._release_profile_lock_if_held()
+                except Exception:
+                    pass
 
     def _cleanup_linux_processes(self) -> bool:
         if platform.system() != "Linux":
@@ -714,12 +1322,15 @@ Object.defineProperty(navigator, 'languages', {{
             EC.presence_of_element_located((By.ID, "id"))
         )
 
+        # Use arguments[0] to safely pass values and avoid JavaScript injection
         self.driver.execute_script(
-            f"document.querySelector('input[id=\"id\"]').setAttribute('value', '{id}')"
+            "document.querySelector('input[id=\"id\"]').setAttribute('value', arguments[0])",
+            id
         )
         self.wait(1)
         self.driver.execute_script(
-            f"document.querySelector('input[id=\"pw\"]').setAttribute('value', '{pw}')"
+            "document.querySelector('input[id=\"pw\"]').setAttribute('value', arguments[0])",
+            pw
         )
         self.wait(1)
 
@@ -779,21 +1390,21 @@ Object.defineProperty(navigator, 'languages', {{
         # 원래 윈도우 사이즈 저장
         originalSize = self.driver.get_window_size()
         
-        # 전체 페이지 크기 계산
-        totalWidth = self.driver.execute_script("return document.body.scrollWidth")
-        totalHeight = self.driver.execute_script("return document.body.scrollHeight")
-        
-        # 윈도우 사이즈를 전체 페이지 크기로 변경
-        self.driver.set_window_size(totalWidth, totalHeight)
-        time.sleep(0.5)  # 리사이즈 완료 대기
-        
-        # 스크린샷 촬영
-        result = self.driver.save_screenshot(path)
-        
-        # 원래 윈도우 사이즈로 복원
-        self.driver.set_window_size(originalSize['width'], originalSize['height'])
-        
-        return result
+        try:
+            # 전체 페이지 크기 계산
+            totalWidth = self.driver.execute_script("return document.body.scrollWidth")
+            totalHeight = self.driver.execute_script("return document.body.scrollHeight")
+            
+            # 윈도우 사이즈를 전체 페이지 크기로 변경
+            self.driver.set_window_size(totalWidth, totalHeight)
+            time.sleep(0.5)  # 리사이즈 완료 대기
+            
+            # 스크린샷 촬영
+            result = self.driver.save_screenshot(path)
+            return result
+        finally:
+            # 원래 윈도우 사이즈로 복원 (예외 발생 시에도 실행)
+            self.driver.set_window_size(originalSize['width'], originalSize['height'])
 
     def getBrowserInfo(self):
         capabilities = self.driver.capabilities
