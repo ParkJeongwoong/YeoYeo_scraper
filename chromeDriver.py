@@ -418,12 +418,20 @@ def _terminate_process_tree(pid: int, timeout: float = PROCESS_KILL_TIMEOUT) -> 
         except Exception:
             logger.debug("Failed to send SIGKILL to pid=%d", p)
     
-    # Final wait
-    time.sleep(0.5)
-    final_alive = [p for p in still_alive if _is_pid_alive(p)]
+    # Final wait with polling for actual termination
+    kill_wait_timeout = min(timeout / 2, 2.0)
+    kill_wait_start = time.time()
     
+    while time.time() - kill_wait_start < kill_wait_timeout:
+        final_alive = [p for p in still_alive if _is_pid_alive(p)]
+        if not final_alive:
+            logger.info("All processes terminated after SIGKILL: %s", all_pids)
+            return True
+        time.sleep(0.2)
+    
+    final_alive = [p for p in still_alive if _is_pid_alive(p)]
     if final_alive:
-        logger.error("Failed to kill processes: %s", final_alive)
+        logger.error("Failed to kill processes after %.1fs: %s", kill_wait_timeout, final_alive)
         return False
     
     logger.info("All processes terminated after SIGKILL: %s", all_pids)
@@ -1224,8 +1232,16 @@ Object.defineProperty(navigator, 'languages', {{
         service_port = metadata.get("servicePort")
         profile_path = metadata.get("chromeProfilePath")
 
+        pids_to_kill = [pid for pid in (browser_pid, service_pid) if pid and _is_pid_alive(pid)]
+        
+        if not pids_to_kill:
+            logger.debug("No alive processes to cleanup in _cleanup_linux_processes")
+            return False
+
         attempted = False
-        for pid in (browser_pid, service_pid):
+        
+        # Phase 1: SIGTERM
+        for pid in pids_to_kill:
             attempted = self._signal_pid(pid, signal.SIGTERM) or attempted
 
         if profile_path and browser_pid is None:
@@ -1238,10 +1254,17 @@ Object.defineProperty(navigator, 'languages', {{
                 "TERM", f"--port={service_port}"
             ) or attempted
 
+        # Wait for graceful termination with polling
         if attempted:
-            time.sleep(0.5)
+            for _ in range(5):  # 0.5s total
+                time.sleep(0.1)
+                pids_to_kill = [pid for pid in pids_to_kill if _is_pid_alive(pid)]
+                if not pids_to_kill:
+                    logger.info("All processes terminated after SIGTERM in fallback cleanup")
+                    return True
 
-        for pid in (browser_pid, service_pid):
+        # Phase 2: SIGKILL for remaining
+        for pid in pids_to_kill:
             attempted = self._signal_pid(pid, FORCE_KILL_SIGNAL) or attempted
 
         if profile_path and browser_pid is None:
@@ -1254,6 +1277,18 @@ Object.defineProperty(navigator, 'languages', {{
                 "KILL", f"--port={service_port}"
             ) or attempted
 
+        # Final verification with polling
+        for _ in range(10):  # 1s total
+            time.sleep(0.1)
+            still_alive = [pid for pid in pids_to_kill if _is_pid_alive(pid)]
+            if not still_alive:
+                logger.info("All processes terminated after SIGKILL in fallback cleanup")
+                return True
+        
+        still_alive = [pid for pid in pids_to_kill if _is_pid_alive(pid)]
+        if still_alive:
+            logger.error("Fallback cleanup failed to terminate processes: %s", still_alive)
+        
         return attempted
 
     def _signal_pid(self, pid, sig) -> bool:
