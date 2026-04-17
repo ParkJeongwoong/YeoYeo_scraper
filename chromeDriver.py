@@ -128,9 +128,10 @@ def cleanup_all_drivers():
         try:
             driver_instance.close()
         except Exception:
-            logger.exception("Failed to cleanup driver during emergency shutdown")
-    
-    logger.info("Emergency driver cleanup completed: %d drivers processed", len(drivers))
+            try:
+                logger.exception("Failed to cleanup driver during emergency shutdown")
+            except Exception:
+                pass
 
 
 # Register emergency cleanup on process exit
@@ -245,12 +246,42 @@ def _release_profile_lock(profile_path: str):
 # Process Detection and Management
 # =============================================================================
 
+def _normalize_pid(pid) -> Optional[int]:
+    """Normalize process identifiers to positive integers only."""
+    if isinstance(pid, bool):
+        return None
+    if isinstance(pid, int):
+        return pid if pid > 0 else None
+    return None
+
+
 def _is_pid_alive(pid: int) -> bool:
-    """Check if a process with given PID is alive."""
-    if pid is None or pid <= 0:
+    """
+    Check if a process with given PID is alive and not a zombie.
+    Returns False for zombie processes (they exist but are not truly alive).
+    """
+    normalized_pid = _normalize_pid(pid)
+    if normalized_pid is None:
         return False
+    
+    # On Linux, check /proc/<pid>/status for zombie state
+    if platform.system() == "Linux":
+        try:
+            status_path = f"/proc/{normalized_pid}/status"
+            if os.path.exists(status_path):
+                with open(status_path, "r") as f:
+                    for line in f:
+                        if line.startswith("State:"):
+                            state = line.split()[1]
+                            if state == "Z":  # Zombie
+                                logger.debug("Process %d is zombie, treating as dead", normalized_pid)
+                                return False
+                            break
+        except (FileNotFoundError, PermissionError, IOError):
+            pass  # Fall through to os.kill check
+    
     try:
-        os.kill(pid, 0)  # Signal 0 just checks if process exists
+        os.kill(normalized_pid, 0)  # Signal 0 just checks if process exists
         return True
     except ProcessLookupError:
         return False
@@ -258,6 +289,27 @@ def _is_pid_alive(pid: int) -> bool:
         return True  # Process exists but we don't have permission
     except Exception:
         return False
+
+
+def _get_process_state(pid: int) -> str:
+    """
+    Get process state from /proc/<pid>/status.
+    Returns state character (R, S, D, Z, T, etc.) or empty string if unavailable.
+    D = uninterruptible sleep (cannot be killed until I/O completes)
+    """
+    normalized_pid = _normalize_pid(pid)
+    if platform.system() != "Linux" or normalized_pid is None:
+        return ""
+    try:
+        status_path = f"/proc/{normalized_pid}/status"
+        if os.path.exists(status_path):
+            with open(status_path, "r") as f:
+                for line in f:
+                    if line.startswith("State:"):
+                        return line.split()[1]
+    except Exception:
+        pass
+    return ""
 
 
 def _find_processes_using_profile(profile_path: str) -> List[dict]:
@@ -357,10 +409,44 @@ def _wait_for_pid_exit(pid: int, timeout: float = PROCESS_KILL_TIMEOUT) -> bool:
     return not _is_pid_alive(pid)
 
 
+def _reap_zombie(pid: int) -> bool:
+    """
+    Try to reap a zombie process using waitpid.
+    Returns True if process was reaped or doesn't exist.
+    """
+    normalized_pid = _normalize_pid(pid)
+    if platform.system() == "Windows" or normalized_pid is None:
+        return True
+    
+    try:
+        # WNOHANG: return immediately if no child has exited
+        result_pid, status = os.waitpid(normalized_pid, os.WNOHANG)
+        if result_pid == normalized_pid:
+            logger.debug("Reaped zombie process: pid=%d, status=%d", normalized_pid, status)
+            return True
+        elif result_pid == 0:
+            # Process exists but hasn't exited yet
+            return False
+    except ChildProcessError:
+        # Not our child process, can't reap it
+        # But if it's a zombie, it will eventually be reaped by init
+        logger.debug("Cannot reap pid=%d (not our child), checking if zombie", normalized_pid)
+        return not _is_pid_alive(normalized_pid)
+    except ProcessLookupError:
+        # Process doesn't exist
+        return True
+    except Exception as e:
+        logger.debug("waitpid failed for pid=%d: %s", normalized_pid, e)
+        return not _is_pid_alive(normalized_pid)
+    
+    return False
+
+
 def _terminate_process_tree(pid: int, timeout: float = PROCESS_KILL_TIMEOUT) -> bool:
     """
     Terminate a process and all its children.
     First tries SIGTERM, then SIGKILL if needed.
+    Also handles zombie processes by attempting to reap them.
     Returns True if all processes terminated.
     """
     if not _is_pid_alive(pid):
@@ -419,7 +505,8 @@ def _terminate_process_tree(pid: int, timeout: float = PROCESS_KILL_TIMEOUT) -> 
             logger.debug("Failed to send SIGKILL to pid=%d", p)
     
     # Final wait with polling for actual termination
-    kill_wait_timeout = min(timeout / 2, 2.0)
+    # Use longer timeout for SIGKILL - kernel may need time to clean up
+    kill_wait_timeout = min(timeout / 2, 5.0)
     kill_wait_start = time.time()
     
     while time.time() - kill_wait_start < kill_wait_timeout:
@@ -427,11 +514,44 @@ def _terminate_process_tree(pid: int, timeout: float = PROCESS_KILL_TIMEOUT) -> 
         if not final_alive:
             logger.info("All processes terminated after SIGKILL: %s", all_pids)
             return True
-        time.sleep(0.2)
+        time.sleep(0.3)
     
     final_alive = [p for p in still_alive if _is_pid_alive(p)]
+    
+    # Check for D-state (uninterruptible sleep) processes
+    for p in final_alive:
+        state = _get_process_state(p)
+        if state == "D":
+            logger.warning(
+                "Process %d is in D-state (uninterruptible sleep), "
+                "cannot be killed until I/O completes. This is a kernel-level issue.",
+                p
+            )
+    
+    # Phase 3: Try to reap any zombie processes
     if final_alive:
+        logger.info("Attempting to reap potential zombie processes: %s", final_alive)
+        for p in final_alive:
+            _reap_zombie(p)
+        
+        # Re-check after reaping attempt
+        time.sleep(0.1)
+        final_alive = [p for p in final_alive if _is_pid_alive(p)]
+    
+    if final_alive:
+        # Log detailed process state for debugging
+        for p in final_alive:
+            state = _get_process_state(p)
+            if state:
+                logger.warning(
+                    "Process %d still exists with state: %s%s", 
+                    p, state,
+                    " (D-state: unkillable until I/O completes)" if state == "D" else ""
+                )
         logger.error("Failed to kill processes after %.1fs: %s", kill_wait_timeout, final_alive)
+        # Even if processes couldn't be killed, we should continue cleanup
+        # to prevent FD leaks. The orphan processes will be cleaned up
+        # on next browser start via _cleanup_orphan_processes_for_profile
         return False
     
     logger.info("All processes terminated after SIGKILL: %s", all_pids)
@@ -685,25 +805,29 @@ class ChromeDriver(driver.Driver):
     def _emergency_cleanup(self):
         """Clean up any partial resources on initialization failure."""
         logger.info("Emergency cleanup triggered")
-        
-        if self._partial_browser is not None:
+
+        partial_browser = getattr(self, "_partial_browser", None)
+        if partial_browser is not None:
             try:
-                self._force_kill_browser(self._partial_browser)
+                self._force_kill_browser(partial_browser)
             except Exception:
                 logger.exception("Failed to cleanup partial browser")
             finally:
                 self._partial_browser = None
-        
-        if self.driver is not None:
+
+        browser = getattr(self, "driver", None)
+        if browser is not None:
             try:
-                self.driver.quit()
+                browser.quit()
             except Exception:
                 pass
             self.driver = None
-        
+
         # Release profile lock if held
-        if self._profile_lock_acquired and self.chrome_profile_path:
-            _release_profile_lock(self.chrome_profile_path)
+        profile_lock_acquired = getattr(self, "_profile_lock_acquired", False)
+        chrome_profile_path = getattr(self, "chrome_profile_path", None)
+        if profile_lock_acquired and chrome_profile_path:
+            _release_profile_lock(chrome_profile_path)
             self._profile_lock_acquired = False
 
     def _get_bool_env(self, name: str, default: bool = False) -> bool:
@@ -766,9 +890,15 @@ class ChromeDriver(driver.Driver):
             self.active_chrome_profile_path = None
             return None
 
-        # Stale file cleanup is already done in __init__ via _cleanup_profile_artifacts_if_safe
+        self._cleanup_stale_profile_files(self.chrome_profile_path)
         self.active_chrome_profile_path = self.chrome_profile_path
         return self.chrome_profile_path
+
+    def _cleanup_stale_profile_files(self, profile_path: str):
+        """Best-effort wrapper kept for cleanup compatibility and tests."""
+        if not profile_path:
+            return False
+        return _cleanup_profile_artifacts_if_safe(profile_path, self.STALE_PROFILE_FILES)
 
     def getDriver(self, options) -> uc.Chrome:
         logger.info(
@@ -912,12 +1042,13 @@ class ChromeDriver(driver.Driver):
     
     def _cleanup_partial_browser(self):
         """Clean up any partially started browser."""
-        if self._partial_browser is None:
+        partial_browser = getattr(self, "_partial_browser", None)
+        if partial_browser is None:
             return
         
         logger.info("Cleaning up partial browser from failed startup")
         try:
-            self._force_kill_browser(self._partial_browser)
+            self._force_kill_browser(partial_browser)
         except Exception:
             logger.exception("Failed to cleanup partial browser")
         finally:
@@ -932,8 +1063,8 @@ class ChromeDriver(driver.Driver):
         # Extract PIDs before quit attempt (they may become unavailable after)
         service = getattr(browser, "service", None)
         service_process = getattr(service, "process", None)
-        service_pid = getattr(service_process, "pid", None)
-        browser_pid = getattr(browser, "browser_pid", None)
+        service_pid = _normalize_pid(getattr(service_process, "pid", None))
+        browser_pid = _normalize_pid(getattr(browser, "browser_pid", None))
         
         logger.info(
             "Force killing browser: browser_pid=%s, service_pid=%s",
@@ -962,7 +1093,7 @@ class ChromeDriver(driver.Driver):
         
         # Force terminate process trees (including children)
         for name, pid in [("browser", browser_pid), ("service", service_pid)]:
-            if pid and _is_pid_alive(pid):
+            if pid is not None and _is_pid_alive(pid):
                 logger.info("Force terminating %s process tree: pid=%d", name, pid)
                 if not _terminate_process_tree(pid, timeout=PROCESS_KILL_TIMEOUT):
                     logger.error("Failed to terminate %s process tree: pid=%d", name, pid)
@@ -1047,11 +1178,11 @@ Object.defineProperty(navigator, 'languages', {{
         )
 
     def close(self):
-        if self._closed:
+        if getattr(self, "_closed", False):
             return
 
         log_fd_status("ChromeDriver.close start")
-        browser = self.driver
+        browser = getattr(self, "driver", None)
         cleanup_start_time = time.time()
 
         if browser is None:
@@ -1059,16 +1190,16 @@ Object.defineProperty(navigator, 'languages', {{
             self._release_profile_lock_if_held()
             return
 
-        if self.debug_mode and self.has_display_server:
+        if getattr(self, "debug_mode", False) and getattr(self, "has_display_server", False):
             logger.info("Skipping Chrome driver close because DEBUG_MODE is enabled")
             self._closed = True
             self._release_profile_lock_if_held()
             return
 
         # Capture PIDs before quit attempt (they may become unavailable after)
-        metadata = self._cleanup_metadata or {}
-        browser_pid = metadata.get("browserPid")
-        service_pid = metadata.get("servicePid")
+        metadata = getattr(self, "_cleanup_metadata", None) or {}
+        browser_pid = _normalize_pid(metadata.get("browserPid"))
+        service_pid = _normalize_pid(metadata.get("servicePid"))
         
         quit_succeeded = False
         try:
@@ -1122,7 +1253,7 @@ Object.defineProperty(navigator, 'languages', {{
     
     def _release_profile_lock_if_held(self):
         """Release profile lock if this instance holds it."""
-        if self._profile_lock_acquired and self.chrome_profile_path:
+        if getattr(self, "_profile_lock_acquired", False) and getattr(self, "chrome_profile_path", None):
             _release_profile_lock(self.chrome_profile_path)
             self._profile_lock_acquired = False
     
@@ -1206,35 +1337,40 @@ Object.defineProperty(navigator, 'languages', {{
     
     def __del__(self):
         """Destructor - last resort cleanup."""
-        if not self._closed:
+        try:
+            if getattr(self, "_closed", False):
+                return
+
+            cleanup_metadata = getattr(self, "_cleanup_metadata", None) or {}
             logger.warning(
                 "ChromeDriver was not properly closed, cleaning up in __del__ "
                 "(profile=%s, browser_pid=%s)",
-                self.chrome_profile_path,
-                self._cleanup_metadata.get("browserPid") if self._cleanup_metadata else None
+                getattr(self, "chrome_profile_path", None),
+                cleanup_metadata.get("browserPid"),
             )
             try:
                 self.close()
             except Exception:
-                # Last resort: at least try to release profile lock
                 try:
                     self._release_profile_lock_if_held()
                 except Exception:
                     pass
+        except Exception:
+            pass
 
     def _cleanup_linux_processes(self) -> bool:
         if platform.system() != "Linux":
             return False
 
-        metadata = self._cleanup_metadata or {}
-        service_pid = metadata.get("servicePid")
-        browser_pid = metadata.get("browserPid")
+        metadata = getattr(self, "_cleanup_metadata", None) or {}
+        service_pid = _normalize_pid(metadata.get("servicePid"))
+        browser_pid = _normalize_pid(metadata.get("browserPid"))
         service_port = metadata.get("servicePort")
         profile_path = metadata.get("chromeProfilePath")
 
         pids_to_kill = [pid for pid in (browser_pid, service_pid) if pid and _is_pid_alive(pid)]
-        
-        if not pids_to_kill:
+
+        if not pids_to_kill and not profile_path and not service_port:
             logger.debug("No alive processes to cleanup in _cleanup_linux_processes")
             return False
 
@@ -1277,16 +1413,34 @@ Object.defineProperty(navigator, 'languages', {{
                 "KILL", f"--port={service_port}"
             ) or attempted
 
-        # Final verification with polling
-        for _ in range(10):  # 1s total
-            time.sleep(0.1)
+        # Final verification with polling (longer wait for SIGKILL)
+        for _ in range(15):  # 3s total
+            time.sleep(0.2)
             still_alive = [pid for pid in pids_to_kill if _is_pid_alive(pid)]
             if not still_alive:
                 logger.info("All processes terminated after SIGKILL in fallback cleanup")
                 return True
         
         still_alive = [pid for pid in pids_to_kill if _is_pid_alive(pid)]
+        
+        # Try to reap any zombie processes
         if still_alive:
+            logger.info("Attempting to reap zombies in fallback cleanup: %s", still_alive)
+            for pid in still_alive:
+                _reap_zombie(pid)
+            time.sleep(0.1)
+            still_alive = [pid for pid in still_alive if _is_pid_alive(pid)]
+        
+        if still_alive:
+            # Log D-state processes for debugging
+            for pid in still_alive:
+                state = _get_process_state(pid)
+                if state == "D":
+                    logger.warning(
+                        "Process %d is in D-state (uninterruptible sleep) in fallback cleanup, "
+                        "cannot be killed until I/O completes",
+                        pid
+                    )
             logger.error("Fallback cleanup failed to terminate processes: %s", still_alive)
         
         return attempted
