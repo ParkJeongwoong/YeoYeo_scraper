@@ -15,6 +15,7 @@ class TestChromeDriverClose:
         instance.chrome_profile_path = "/tmp/profile"
         instance.active_chrome_profile_path = "/tmp/profile"
         instance.use_subprocess = False
+        instance.user_multi_procs = False
         instance.driver = driver
         instance._closed = False
         instance._cleanup_metadata = {
@@ -94,6 +95,7 @@ class TestChromeDriverLinuxCleanup:
         instance.chrome_profile_path = metadata.get("chromeProfilePath")
         instance.active_chrome_profile_path = metadata.get("chromeProfilePath")
         instance.use_subprocess = False
+        instance.user_multi_procs = False
         instance.driver = None
         instance._closed = False
         instance._cleanup_metadata = metadata
@@ -168,6 +170,7 @@ class TestChromeDriverInitialization:
         instance.chrome_profile_path = "/tmp/profile"
         instance.active_chrome_profile_path = "/tmp/profile"
         instance.use_subprocess = False
+        instance.user_multi_procs = False
         instance.driver = None
         instance._closed = False
         instance._cleanup_metadata = {}
@@ -256,7 +259,34 @@ class TestChromeDriverRuntimeFlags:
     def test_get_bool_env_uses_default_when_variable_is_missing(self):
         instance = self._make_instance()
         with patch("chromeDriver.os.getenv", return_value=None):
-            assert instance._get_bool_env("UC_USE_SUBPROCESS", default=True) is True
+            assert instance._get_bool_env("UC_USE_SUBPROCESS", default=False) is False
+
+    def test_should_enable_uc_multi_procs_when_patched_binary_exists(self):
+        instance = self._make_instance()
+        patcher = MagicMock(executable_path="/tmp/uc/chromedriver")
+
+        with patch("chromeDriver.os.getenv", return_value=None), patch(
+            "chromeDriver.uc.Patcher", return_value=patcher
+        ) as mock_patcher, patch("chromeDriver.os.path.exists", return_value=True):
+            assert instance._should_enable_uc_multi_procs() is True
+
+        mock_patcher.assert_called_once_with(version_main=146)
+
+    def test_start_browser_passes_uc_stability_flags(self):
+        instance = self._make_instance()
+        instance.use_subprocess = False
+        instance.user_multi_procs = True
+        options = MagicMock()
+
+        with patch("chromeDriver.uc.Chrome", return_value=MagicMock()) as mock_uc_chrome:
+            instance._startBrowser(options)
+
+        mock_uc_chrome.assert_called_once_with(
+            options=options,
+            use_subprocess=False,
+            user_multi_procs=True,
+            version_main=146,
+        )
 
 
 class TestChromeDriverOptions:

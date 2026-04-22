@@ -8,6 +8,7 @@ from chromeDriver import (
     create_browser,
     BrowserStartupError,
     FDExhaustedError,
+    ensure_chromedriver_patched,
 )
 
 from dotenv import load_dotenv
@@ -573,4 +574,12 @@ def deleteDiagnosticSessions(mode: str):
 
 if __name__ == "__main__":
     debugMode = os.environ.get("DEBUG_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+    
+    # Pre-patch chromedriver at startup to avoid race conditions
+    logger.info("Pre-patching chromedriver at server startup...")
+    if ensure_chromedriver_patched():
+        logger.info("Chromedriver pre-patching completed successfully")
+    else:
+        logger.warning("Chromedriver pre-patching failed - will attempt patching on first request")
+    
     app.run("0.0.0.0", port=5000, debug=debugMode, use_reloader=debugMode)

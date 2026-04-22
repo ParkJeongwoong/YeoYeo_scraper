@@ -139,6 +139,58 @@ atexit.register(cleanup_all_drivers)
 
 
 # =============================================================================
+# Pre-patching for Multi-Process Safety
+# =============================================================================
+
+_patcher_lock = threading.Lock()
+_patcher_initialized = False
+
+
+def ensure_chromedriver_patched(version_main: int = 146, timeout: float = 120.0) -> bool:
+    """
+    Ensure chromedriver is patched before any browser instances are created.
+    Call this once at server startup to avoid patching race conditions.
+    
+    Returns:
+        True if patching succeeded or was already done, False otherwise
+    """
+    global _patcher_initialized
+    
+    with _patcher_lock:
+        if _patcher_initialized:
+            logger.debug("Chromedriver already patched, skipping")
+            return True
+        
+        logger.info("Pre-patching chromedriver for version %d (timeout=%.0fs)...", version_main, timeout)
+        
+        patch_result = {"success": False, "error": None}
+        
+        def do_patch():
+            try:
+                patcher = uc.Patcher(version_main=version_main)
+                patcher.auto()
+                patch_result["success"] = True
+                logger.info("Chromedriver patched successfully: %s", patcher.executable_path)
+            except Exception as e:
+                patch_result["error"] = e
+                logger.exception("Failed to patch chromedriver")
+        
+        thread = threading.Thread(target=do_patch, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout)
+        
+        if thread.is_alive():
+            logger.error("Chromedriver patching timed out after %.0fs", timeout)
+            return False
+        
+        if patch_result["success"]:
+            _patcher_initialized = True
+            return True
+        
+        return False
+
+
+# =============================================================================
 # Profile Lock Management (fcntl-based for Linux)
 # =============================================================================
 
@@ -708,9 +760,10 @@ class ChromeDriver(driver.Driver):
         
         self.debug_mode = self._get_bool_env("DEBUG_MODE")
         self.chrome_profile_path = os.getenv("CHROME_PROFILE_PATH")
-        self.use_subprocess = self._get_bool_env("UC_USE_SUBPROCESS", default=True)
+        self.use_subprocess = self._get_bool_env("UC_USE_SUBPROCESS", default=False)
         self.has_display_server = self._has_display_server()
         self.run_headless = self._should_run_headless()
+        self.user_multi_procs = self._should_enable_uc_multi_procs()
         self.active_chrome_profile_path = None
         self.driver = None
         self._closed = False
@@ -846,6 +899,29 @@ class ChromeDriver(driver.Driver):
             return True
         return False
 
+    def _should_enable_uc_multi_procs(self) -> bool:
+        env_value = os.getenv("UC_USER_MULTI_PROCS")
+        if env_value is not None:
+            return env_value.strip().lower() in self.TRUE_ENV_VALUES
+
+        try:
+            patcher = uc.Patcher(version_main=146)
+            executable_path = getattr(patcher, "executable_path", None)
+        except Exception:
+            logger.exception("Failed to inspect undetected_chromedriver patcher state")
+            return False
+
+        if not executable_path:
+            return False
+
+        reuse_existing_binary = os.path.exists(executable_path)
+        if reuse_existing_binary:
+            logger.info(
+                "Reusing existing undetected_chromedriver binary with user_multi_procs: %s",
+                executable_path,
+            )
+        return reuse_existing_binary
+
     def getOptions(self) -> uc.ChromeOptions:
         return self._buildOptions(include_profile=True)
 
@@ -902,10 +978,11 @@ class ChromeDriver(driver.Driver):
 
     def getDriver(self, options) -> uc.Chrome:
         logger.info(
-            "Starting Chrome driver with debugMode=%s headless=%s useSubprocess=%s hasDisplayServer=%s profile=%s activeProfile=%s",
+            "Starting Chrome driver with debugMode=%s headless=%s useSubprocess=%s userMultiProcs=%s hasDisplayServer=%s profile=%s activeProfile=%s",
             self.debug_mode,
             self.run_headless,
             self.use_subprocess,
+            self.user_multi_procs,
             self.has_display_server,
             self.chrome_profile_path,
             self.active_chrome_profile_path,
@@ -1012,33 +1089,33 @@ class ChromeDriver(driver.Driver):
     def _startBrowserSafe(self, options, timeout: float = BROWSER_STARTUP_TIMEOUT) -> uc.Chrome:
         """
         Start browser with tracking for cleanup on failure.
-        Includes timeout monitoring for startup.
+        Runs uc.Chrome() on the current thread to avoid interpreter instability
+        during driver patching and browser bootstrap.
         """
-        browser = None
         start_time = time.time()
-        
+        browser = None
+
         try:
             browser = self._startBrowser(options)
-            
-            elapsed = time.time() - start_time
-            if elapsed > timeout:
-                logger.warning(
-                    "Browser startup took %.1fs (exceeded timeout of %.1fs)",
-                    elapsed, timeout
-                )
-            
-            self._partial_browser = None  # Success, clear partial tracking
-            return browser
         except Exception as e:
             elapsed = time.time() - start_time
             logger.error(
                 "Browser startup failed after %.1fs (timeout=%.1fs): %s",
                 elapsed, timeout, e
             )
-            # Track partial browser for cleanup
             if browser is not None:
                 self._partial_browser = browser
             raise
+
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            logger.warning(
+                "Browser startup took %.1fs (exceeded timeout of %.1fs)",
+                elapsed, timeout
+            )
+
+        self._partial_browser = None
+        return browser
     
     def _cleanup_partial_browser(self):
         """Clean up any partially started browser."""
@@ -1110,7 +1187,8 @@ class ChromeDriver(driver.Driver):
     def _startBrowser(self, options) -> uc.Chrome:
         return uc.Chrome(
             options=options,
-            use_subprocess=self.use_subprocess,
+            use_subprocess=getattr(self, "use_subprocess", False),
+            user_multi_procs=getattr(self, "user_multi_procs", False),
             version_main=146,
         )
 
@@ -1137,6 +1215,7 @@ class ChromeDriver(driver.Driver):
             "debugMode": self.debug_mode,
             "headless": self.run_headless,
             "useSubprocess": self.use_subprocess,
+            "userMultiProcs": getattr(self, "user_multi_procs", False),
             "hasDisplayServer": self.has_display_server,
             "configuredChromeProfilePath": self.chrome_profile_path,
             "chromeProfilePath": self.active_chrome_profile_path,
