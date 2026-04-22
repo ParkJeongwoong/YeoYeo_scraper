@@ -210,7 +210,15 @@ class TestChromeDriverInitialization:
         mock_apply.assert_called_once_with(browser)
         mock_force_kill.assert_not_called()
 
-    def test_get_driver_retries_without_profile_when_profile_start_fails(self):
+    def test_get_driver_wipes_profile_and_retries_with_same_profile_on_failure(self):
+        """
+        When attempt 1 with the configured profile fails, attempt 2 MUST:
+        - wipe the profile directory in-place (preserving the lock file),
+        - retry with the SAME profile path (NOT fall back to no-profile),
+        so that the subsequent login re-populates the profile and the
+        next request can skip login. Re-login on every request is
+        blocked by Naver (captcha / IP block), see AGENTS.md.
+        """
         instance = self._make_instance()
         initial_options = MagicMock()
         browser = MagicMock()
@@ -225,7 +233,9 @@ class TestChromeDriverInitialization:
             instance, "_perform_startup_health_check", return_value=True
         ) as mock_health_check, patch.object(
             instance, "_applyLanguageOverrides"
-        ) as mock_apply, patch(
+        ) as mock_apply, patch.object(
+            instance, "_wipe_profile_directory_preserving_lock", return_value=True
+        ) as mock_wipe, patch(
             "chromeDriver._cleanup_orphan_processes_for_profile"
         ) as mock_orphan_cleanup:
             result = instance.getDriver(initial_options)
@@ -235,15 +245,55 @@ class TestChromeDriverInitialization:
         assert instance.options is retry_options
         assert instance._cleanup_metadata == {"servicePort": 1234}
         assert retry_options is not initial_options
-        assert all(
-            not argument.startswith(ChromeDriver.USER_DATA_DIR_ARGUMENT_PREFIX)
+        # attempt 2 must KEEP the configured profile, not drop it
+        assert any(
+            argument.startswith(ChromeDriver.USER_DATA_DIR_ARGUMENT_PREFIX)
+            and argument.endswith(instance.chrome_profile_path)
             for argument in retry_options.arguments
         )
         assert mock_start_browser.call_count == 2
+        mock_wipe.assert_called_once_with(instance.chrome_profile_path)
         mock_orphan_cleanup.assert_called_once_with("/tmp/profile")
         mock_capture.assert_called_once_with(browser)
         mock_health_check.assert_called_once_with(browser)
         mock_apply.assert_called_once_with(browser)
+
+
+class TestWipeProfileDirectory:
+    def _make_instance(self):
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance.chrome_profile_path = None
+        instance.active_chrome_profile_path = None
+        return instance
+
+    def test_wipe_preserves_profile_lock_file(self, tmp_path):
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        # Lock file (simulated flock target) MUST be preserved
+        lock_file = profile / ".profile.lock"
+        lock_file.write_text("pid=123\n")
+        # Arbitrary profile content that MUST be removed
+        (profile / "Cookies").write_text("session-junk")
+        (profile / "Preferences").write_text("{}")
+        subdir = profile / "Default"
+        subdir.mkdir()
+        (subdir / "History").write_text("history-junk")
+
+        instance = self._make_instance()
+        result = instance._wipe_profile_directory_preserving_lock(str(profile))
+
+        assert result is True
+        assert lock_file.exists()
+        assert lock_file.read_text() == "pid=123\n"
+        assert not (profile / "Cookies").exists()
+        assert not (profile / "Preferences").exists()
+        assert not subdir.exists()
+
+    def test_wipe_returns_false_when_profile_path_missing(self, tmp_path):
+        instance = self._make_instance()
+        missing = tmp_path / "does-not-exist"
+        assert instance._wipe_profile_directory_preserving_lock(str(missing)) is False
+        assert instance._wipe_profile_directory_preserving_lock("") is False
 
 
 class TestChromeDriverRuntimeFlags:

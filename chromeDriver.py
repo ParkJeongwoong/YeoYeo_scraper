@@ -3,6 +3,7 @@ import driver
 import logging
 import os
 import platform
+import shutil
 import signal
 import subprocess
 import threading
@@ -1051,6 +1052,52 @@ class ChromeDriver(driver.Driver):
             return False
         return _cleanup_profile_artifacts_if_safe(profile_path, self.STALE_PROFILE_FILES)
 
+    def _wipe_profile_directory_preserving_lock(self, profile_path: str) -> bool:
+        """
+        Remove every entry inside `profile_path` EXCEPT the `.profile.lock`
+        file (which we currently hold via fcntl.flock - deleting it would
+        invalidate the lock handle held by this process).
+
+        Intended for attempt 2 recovery: after attempt 1 fails with a
+        configured profile, we assume the profile state is corrupted and
+        reset it in-place so the same path can be reused. The successful
+        login from attempt 2 will re-populate the profile, allowing the
+        next request to reuse cookies/session via attempt 1 and avoid
+        re-login (which Naver flags as abuse).
+
+        Returns True if wipe ran (profile_path valid and existed),
+        False otherwise.
+        """
+        if not profile_path or not os.path.isdir(profile_path):
+            return False
+
+        lock_filename = os.path.basename(_get_profile_lock_path(profile_path))
+        removed = 0
+        failed: List[str] = []
+
+        for entry in os.listdir(profile_path):
+            if entry == lock_filename:
+                # Preserve the flock target file - our fd is still held on it.
+                continue
+            target = os.path.join(profile_path, entry)
+            try:
+                if os.path.islink(target) or os.path.isfile(target):
+                    os.remove(target)
+                elif os.path.isdir(target):
+                    shutil.rmtree(target, ignore_errors=False)
+                removed += 1
+            except Exception:
+                logger.exception(
+                    "Failed to remove profile entry during wipe: %s", target
+                )
+                failed.append(entry)
+
+        logger.info(
+            "Profile wiped (lock preserved): path=%s removed=%d failed=%d",
+            profile_path, removed, len(failed)
+        )
+        return True
+
     def getDriver(self, options) -> uc.Chrome:
         logger.info(
             "Starting Chrome driver with debugMode=%s headless=%s useSubprocess=%s userMultiProcs=%s hasDisplayServer=%s profile=%s activeProfile=%s",
@@ -1091,20 +1138,50 @@ class ChromeDriver(driver.Driver):
                     f"Chrome failed to start: {e}"
                 ) from e
         
-        # Attempt 2: Without profile (if first attempt failed and profile was configured)
+        # Attempt 2: Wipe the profile directory in place and retry with the
+        # SAME profile path. This is the "broken profile -> reset -> login
+        # again -> session persisted" recovery path. We deliberately do NOT
+        # fall back to a no-profile launch: doing so would force re-login
+        # on every subsequent request, which Naver flags as abuse and
+        # responds to with captcha + IP block. See AGENTS.md
+        # "네이버 로그인 최소화 제약".
         if browser is None and self.chrome_profile_path:
-            logger.info("Retrying Chrome start without profile (attempt 2)")
-            log_fd_status("Before retry without profile")
-            
+            logger.info(
+                "Retrying Chrome start with wiped profile (attempt 2): %s",
+                self.chrome_profile_path,
+            )
+            log_fd_status("Before retry with wiped profile")
+
             try:
-                retry_options = self._buildOptions(include_profile=False)
+                # Profile is assumed corrupted - reset it in place. The
+                # .profile.lock we hold is preserved so concurrency
+                # guarantees remain intact.
+                self._wipe_profile_directory_preserving_lock(
+                    self.chrome_profile_path
+                )
+
+                retry_options = self._buildOptions(include_profile=True)
                 self.options = retry_options
-                browser = self._startBrowserSafe(retry_options, timeout=BROWSER_STARTUP_TIMEOUT)
+                browser = self._startBrowserSafe(
+                    retry_options, timeout=BROWSER_STARTUP_TIMEOUT
+                )
+                logger.info(
+                    "Chrome started with wiped profile; successful login will "
+                    "persist session to profile for next request: %s",
+                    self.chrome_profile_path,
+                )
             except Exception as e:
                 # CRITICAL: Clean up any partial browser from failed retry
                 self._cleanup_partial_browser()
+                try:
+                    _cleanup_orphan_processes_for_profile(self.chrome_profile_path)
+                except Exception:
+                    logger.exception(
+                        "Failed orphan cleanup after attempt 2 failure: %s",
+                        self.chrome_profile_path,
+                    )
                 raise BrowserStartupError(
-                    f"Chrome failed to start after retry: {e}"
+                    f"Chrome failed to start after profile wipe retry: {e}"
                 ) from last_exception
 
         if browser is None:
