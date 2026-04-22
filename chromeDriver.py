@@ -953,9 +953,18 @@ class ChromeDriver(driver.Driver):
                 pass
             self.driver = None
 
+        chrome_profile_path = getattr(self, "chrome_profile_path", None)
+        if chrome_profile_path:
+            try:
+                _cleanup_orphan_processes_for_profile(chrome_profile_path)
+            except Exception:
+                logger.exception(
+                    "Failed orphan cleanup during emergency cleanup: %s",
+                    chrome_profile_path,
+                )
+
         # Release profile lock if held
         profile_lock_acquired = getattr(self, "_profile_lock_acquired", False)
-        chrome_profile_path = getattr(self, "chrome_profile_path", None)
         if profile_lock_acquired and chrome_profile_path:
             _release_profile_lock(chrome_profile_path)
             self._profile_lock_acquired = False
@@ -978,26 +987,15 @@ class ChromeDriver(driver.Driver):
 
     def _should_enable_uc_multi_procs(self) -> bool:
         env_value = os.getenv("UC_USER_MULTI_PROCS")
-        if env_value is not None:
-            return env_value.strip().lower() in self.TRUE_ENV_VALUES
-
-        try:
-            patcher = uc.Patcher(version_main=146)
-            executable_path = getattr(patcher, "executable_path", None)
-        except Exception:
-            logger.exception("Failed to inspect undetected_chromedriver patcher state")
-            return False
-
-        if not executable_path:
-            return False
-
-        reuse_existing_binary = os.path.exists(executable_path)
-        if reuse_existing_binary:
+        if env_value is None:
             logger.info(
-                "Reusing existing undetected_chromedriver binary with user_multi_procs: %s",
-                executable_path,
+                "UC_USER_MULTI_PROCS not set; defaulting to disabled for startup stability"
             )
-        return reuse_existing_binary
+            return False
+
+        enabled = env_value.strip().lower() in self.TRUE_ENV_VALUES
+        logger.info("UC_USER_MULTI_PROCS explicitly set: enabled=%s", enabled)
+        return enabled
 
     def getOptions(self) -> uc.ChromeOptions:
         return self._buildOptions(include_profile=True)
@@ -1079,6 +1077,14 @@ class ChromeDriver(driver.Driver):
             )
             # CRITICAL: Clean up any partial browser from failed attempt
             self._cleanup_partial_browser()
+            if self.chrome_profile_path:
+                try:
+                    _cleanup_orphan_processes_for_profile(self.chrome_profile_path)
+                except Exception:
+                    logger.exception(
+                        "Failed orphan cleanup after startup failure: %s",
+                        self.chrome_profile_path,
+                    )
             
             if not self.chrome_profile_path:
                 raise BrowserStartupError(

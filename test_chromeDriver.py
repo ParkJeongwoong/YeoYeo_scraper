@@ -225,7 +225,9 @@ class TestChromeDriverInitialization:
             instance, "_perform_startup_health_check", return_value=True
         ) as mock_health_check, patch.object(
             instance, "_applyLanguageOverrides"
-        ) as mock_apply:
+        ) as mock_apply, patch(
+            "chromeDriver._cleanup_orphan_processes_for_profile"
+        ) as mock_orphan_cleanup:
             result = instance.getDriver(initial_options)
 
         retry_options = mock_start_browser.call_args_list[1].args[0]
@@ -238,6 +240,7 @@ class TestChromeDriverInitialization:
             for argument in retry_options.arguments
         )
         assert mock_start_browser.call_count == 2
+        mock_orphan_cleanup.assert_called_once_with("/tmp/profile")
         mock_capture.assert_called_once_with(browser)
         mock_health_check.assert_called_once_with(browser)
         mock_apply.assert_called_once_with(browser)
@@ -269,16 +272,21 @@ class TestChromeDriverRuntimeFlags:
         with patch("chromeDriver.os.getenv", return_value=None):
             assert instance._get_bool_env("UC_USE_SUBPROCESS", default=False) is False
 
-    def test_should_enable_uc_multi_procs_when_patched_binary_exists(self):
+    def test_should_enable_uc_multi_procs_defaults_to_false_when_env_is_missing(self):
         instance = self._make_instance()
-        patcher = MagicMock(executable_path="/tmp/uc/chromedriver")
 
         with patch("chromeDriver.os.getenv", return_value=None), patch(
-            "chromeDriver.uc.Patcher", return_value=patcher
-        ) as mock_patcher, patch("chromeDriver.os.path.exists", return_value=True):
-            assert instance._should_enable_uc_multi_procs() is True
+            "chromeDriver.uc.Patcher"
+        ) as mock_patcher:
+            assert instance._should_enable_uc_multi_procs() is False
 
-        mock_patcher.assert_called_once_with(version_main=146)
+        mock_patcher.assert_not_called()
+
+    def test_should_enable_uc_multi_procs_when_env_opt_in_is_true(self):
+        instance = self._make_instance()
+
+        with patch("chromeDriver.os.getenv", return_value="true"):
+            assert instance._should_enable_uc_multi_procs() is True
 
     def test_start_browser_passes_uc_stability_flags(self):
         instance = self._make_instance()

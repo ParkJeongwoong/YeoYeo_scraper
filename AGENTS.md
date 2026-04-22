@@ -16,6 +16,12 @@
 - **FD 모니터링**: `/proc/self/fd` 로 현재 FD 수 추적 (`FD_WARNING_THRESHOLD=800`, `FD_CRITICAL_THRESHOLD=950`)
 - **동시성 제어**: `MAX_CONCURRENT_BROWSERS` 세마포어 + 프로필 락(fcntl)
 - **Chrome 버전**: **146 고정** (EC2에 설치된 Chrome 도 146). `version_main=146` 하드코딩은 의도된 것이며 버그가 아님. 버전 변경 시 운영팀이 수동으로 업데이트.
+- **재발 방지 규칙 (2026-04-22 장애)**:
+  - `SessionNotCreatedException: cannot connect to chrome at 127.0.0.1:<port>` 는 우선 `Chrome 기동 직후 비정상 종료` 로 판단할 것. 시작 실패를 곧바로 메모리 누수로 단정하지 말 것.
+  - `UC_USER_MULTI_PROCS` 는 **명시적 env opt-in일 때만 활성화**할 것. "patched binary가 이미 있으니 자동 활성화" 같은 추론 기반 기본값 변경은 금지.
+  - 시작 로그에 `userMultiProcs=False` 가 찍히는 것이 기본 정상 상태다. 운영에서 `true` 가 보이면 환경변수 또는 코드 경로를 다시 확인할 것.
+  - `uc.Chrome()` 가 객체를 반환하기 전에 예외를 던질 수 있으므로, 시작 실패 시에도 프로필 기준 orphan cleanup 을 반드시 수행해야 한다.
+  - 프로필 락/고아 프로세스 정리 로직을 수정할 때는 "동시 실행 중인 정상 세션을 죽이지 않는지" 와 "시작 실패 후 잔여 프로세스가 남지 않는지" 를 함께 검토할 것.
 
 ---
 
@@ -141,6 +147,10 @@ class NewEndpoint(Resource):
 - 봇 감지가 강화되면 `getDriver()` 메서드의 JavaScript 조작 코드 수정
 - Headless 모드 해제 시 `--headless=new` 옵션 제거
 - 브라우저 버전 업데이트 시 ChromeDriver 버전 확인
+- `user_multi_procs` 는 기본값으로 자동 활성화하지 말 것. 필요 시 `UC_USER_MULTI_PROCS=true` 를 운영에서 명시한 경우에만 켤 것
+- 시작 직후 `cannot connect to chrome at 127.0.0.1:<port>` 가 발생하면 `메모리 누수` 보다 `기동 실패 + 잔여 프로세스/프로필 상태` 를 먼저 의심할 것
+- 시작 실패 후 재시도 전에 `_cleanup_partial_browser()` 만으로 충분하다고 가정하지 말 것. `uc.Chrome()` 반환 전 예외 경로에서도 orphan cleanup 이 필요하다
+- 안정성 수정 시에는 반드시 로그로 `userMultiProcs`, 프로필 락 획득/해제, orphan cleanup 수행 여부를 확인할 것
 
 **수정 방법**:
 ```python
@@ -474,6 +484,7 @@ with open("debug.html", "w", encoding="utf-8") as f:
    - 현재 구조는 동시 요청 처리 미지원
    - 여러 요청이 동시에 들어오면 ChromeDriver 충돌 가능
    - 해결: Queue 또는 Celery 같은 작업 큐 도입
+   - 단, `user_multi_procs` 자동 활성화로 이 문제를 우회하려고 하지 말 것. 이 프로젝트에서는 명시적 운영 설정 없이 자동 활성화하면 오히려 기동 실패/잔여 프로세스 문제를 악화시킨 이력이 있음
 
 5. **예약 정보 정확성**
    - 네이버 페이지 로딩 시간에 따라 데이터 누락 가능
