@@ -178,7 +178,15 @@ class TestChromeDriverInitialization:
         instance.options = MagicMock(arguments=["--headless=new"])
         return instance
 
-    def test_get_driver_fails_when_language_overrides_fail(self):
+    def test_get_driver_keeps_browser_when_language_overrides_fail(self):
+        """
+        CD-003: Language override failure is non-fatal.
+
+        If the browser started successfully AND passed the health check, a
+        subsequent CDP failure in _applyLanguageOverrides must NOT kill the
+        browser or raise BrowserStartupError - the browser is still usable
+        for the actual request. We only log a warning and return the browser.
+        """
         instance = self._make_instance()
         options = MagicMock()
         browser = MagicMock()
@@ -192,15 +200,15 @@ class TestChromeDriverInitialization:
         ) as mock_apply, patch.object(
             instance, "_force_kill_browser"
         ) as mock_force_kill:
-            with pytest.raises(BrowserStartupError):
-                instance.getDriver(options)
+            result = instance.getDriver(options)
 
+        assert result is browser
         assert instance._cleanup_metadata == {"servicePort": 1234}
         mock_start_browser.assert_called_once_with(options)
         mock_capture.assert_called_once_with(browser)
         mock_health_check.assert_called_once_with(browser)
         mock_apply.assert_called_once_with(browser)
-        mock_force_kill.assert_called_once_with(browser)
+        mock_force_kill.assert_not_called()
 
     def test_get_driver_retries_without_profile_when_profile_start_fails(self):
         instance = self._make_instance()

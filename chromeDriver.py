@@ -204,10 +204,34 @@ def _get_profile_lock_path(profile_path: str) -> str:
     return os.path.join(profile_path, ".profile.lock")
 
 
+def _read_lock_holder_pid(lock_path: str) -> Optional[int]:
+    """
+    Read the pid of the current lock holder from the lock file.
+    Returns None if the file doesn't exist, is empty, or can't be parsed.
+    """
+    try:
+        with open(lock_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("pid="):
+                    try:
+                        return int(line.split("=", 1)[1].strip())
+                    except (ValueError, IndexError):
+                        return None
+    except (OSError, FileNotFoundError):
+        pass
+    return None
+
+
 def _acquire_profile_lock(profile_path: str, timeout: float = PROFILE_LOCK_TIMEOUT) -> bool:
     """
     Acquire exclusive lock on profile directory.
     Returns True if lock acquired, False if timeout.
+
+    IMPORTANT: Opens the lock file WITHOUT truncating it so that the
+    previous holder's pid/time metadata is preserved while we wait for
+    the lock. The metadata is only overwritten after we successfully
+    acquire the flock.
     """
     if platform.system() == "Windows":
         logger.debug("Profile locking not supported on Windows, skipping")
@@ -228,15 +252,25 @@ def _acquire_profile_lock(profile_path: str, timeout: float = PROFILE_LOCK_TIMEO
     lock_file = None
     
     try:
-        # Create lock file if not exists
-        lock_file = open(lock_path, "w")
+        # Open in read+write mode WITHOUT truncating.
+        # This preserves the previous holder's "pid=..." metadata so that
+        # _try_acquire_profile_lock_with_orphan_cleanup can check whether
+        # the holder is alive before declaring orphans.
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        lock_file = os.fdopen(fd, "r+")
         
         while True:
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                # Lock acquired
+                # Lock acquired - NOW it is safe to overwrite the metadata.
+                lock_file.seek(0)
+                lock_file.truncate()
                 lock_file.write(f"pid={os.getpid()}\ntime={time.time()}\n")
                 lock_file.flush()
+                try:
+                    os.fsync(lock_file.fileno())
+                except OSError:
+                    pass
                 
                 with _profile_locks_mutex:
                     _profile_locks[profile_path] = (lock_file, lock_path)
@@ -808,7 +842,22 @@ class ChromeDriver(driver.Driver):
     
     def _try_acquire_profile_lock_with_orphan_cleanup(self) -> bool:
         """
-        Try to acquire profile lock. If it fails, clean up orphan processes and retry.
+        Try to acquire profile lock safely.
+
+        Behavior:
+        1. Short-timeout attempt (5s) to acquire the lock fast-path.
+        2. If that fails, inspect the lock file to see which pid currently
+           holds it.
+           - If the holder is ALIVE, the lock is legitimately in use by a
+             sibling request. Do NOT touch any processes - just wait for
+             the lock to be released normally.
+           - If the holder is dead, unknown, or unparsable, only THEN run
+             orphan cleanup against processes bound to the profile path.
+
+        This prevents the previous catastrophic failure mode where a
+        waiting request would kill the Chrome processes of a concurrent
+        request that was still legitimately running.
+
         Returns True if lock acquired, False otherwise.
         """
         if not self.chrome_profile_path:
@@ -820,21 +869,49 @@ class ChromeDriver(driver.Driver):
             self._profile_lock_acquired = True
             return True
         
-        # Lock acquisition failed - likely orphan process holding it
-        logger.warning(
-            "Profile lock acquisition failed (timeout=%.1fs), attempting orphan cleanup: %s",
-            short_timeout, self.chrome_profile_path
-        )
+        remaining_timeout = max(0.0, PROFILE_LOCK_TIMEOUT - short_timeout)
         
-        # Clean up orphan processes
+        # Inspect the lock holder before deciding to kill anything.
+        lock_path = _get_profile_lock_path(self.chrome_profile_path)
+        holder_pid = _read_lock_holder_pid(lock_path)
+        holder_alive = holder_pid is not None and _is_pid_alive(holder_pid)
+        
+        if holder_alive:
+            logger.info(
+                "Profile lock held by LIVE process pid=%d; waiting %.1fs for release "
+                "(skipping orphan cleanup to avoid killing sibling session): %s",
+                holder_pid, remaining_timeout, self.chrome_profile_path
+            )
+            if remaining_timeout > 0 and _acquire_profile_lock(
+                self.chrome_profile_path, timeout=remaining_timeout
+            ):
+                self._profile_lock_acquired = True
+                logger.info(
+                    "Profile lock acquired after waiting for live holder pid=%d: %s",
+                    holder_pid, self.chrome_profile_path
+                )
+                return True
+            logger.error(
+                "Profile lock timed out while holder pid=%d is still alive: %s",
+                holder_pid, self.chrome_profile_path
+            )
+            return False
+        
+        # Holder is dead, unknown, or the file is corrupt - treat as orphan.
+        logger.warning(
+            "Profile lock holder pid=%s is dead or unknown, running orphan cleanup: %s",
+            holder_pid, self.chrome_profile_path
+        )
         _cleanup_orphan_processes_for_profile(self.chrome_profile_path)
         
         # Wait briefly for processes to fully terminate
         time.sleep(0.5)
+        remaining_timeout = max(0.0, remaining_timeout - 0.5)
         
         # Second attempt: try again with remaining timeout
-        remaining_timeout = PROFILE_LOCK_TIMEOUT - short_timeout - 0.5
-        if remaining_timeout > 0 and _acquire_profile_lock(self.chrome_profile_path, timeout=remaining_timeout):
+        if remaining_timeout > 0 and _acquire_profile_lock(
+            self.chrome_profile_path, timeout=remaining_timeout
+        ):
             self._profile_lock_acquired = True
             logger.info("Profile lock acquired after orphan cleanup: %s", self.chrome_profile_path)
             return True
@@ -1042,17 +1119,18 @@ class ChromeDriver(driver.Driver):
                 "Browser started but session health check failed (InvalidSessionIdException or DevTools disconnected)"
             )
         
-        # Step 6: Apply language overrides (only after health check passes)
+        # Step 6: Apply language overrides (non-fatal)
+        # CDP calls (Network.enable / Emulation.setLocaleOverride / addScriptToEvaluateOnNewDocument)
+        # can fail intermittently on fresh uc.Chrome sessions. Language override is a
+        # nice-to-have for Accept-Language / navigator.language - the browser itself is
+        # still fully usable without it, so we must NOT kill a healthy browser here.
         try:
             self._applyLanguageOverrides(browser)
             logger.debug("Language overrides applied successfully")
         except Exception as e:
-            # Language override failure after health check is a critical error
-            logger.error("Failed to apply language overrides after health check: %s", e)
-            self._force_kill_browser(browser)
-            raise BrowserStartupError(
-                f"Browser started but language override failed: {e}"
-            ) from e
+            logger.warning(
+                "Language override failed (non-fatal), continuing without overrides: %s", e
+            )
         
         return browser
     

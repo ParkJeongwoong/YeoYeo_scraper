@@ -4,8 +4,18 @@
 네이버 예약 관리 시스템 자동화 스크래퍼 (Flask 기반 REST API)
 - **목적**: 네이버 비즈니스 예약 관리 자동화 (예약 정보 동기화, 조회)
 - **주요 기술**: Flask, Flask-RESTX, Selenium, BeautifulSoup4
-- **실행 방법**: `.\.venv_flask\Scripts\python.exe flaskServer.py`
+- **로컬 개발 실행**: `.\.venv_flask\Scripts\python.exe flaskServer.py` (Windows)
 - **Swagger UI**: 서버 실행 후 `http://localhost:5000/docs` 접속
+
+### 실행 환경 (운영)
+- **플랫폼**: AWS EC2 (Linux)
+- **Chrome 실행**: Headless 모드 (디스플레이 서버 없음)
+- **프로세스 관리**: `/proc/<pid>` 기반 상태 확인, `pgrep`/`pkill`, `fcntl.flock` 기반 프로필 락 사용 가능
+- **시그널**: SIGTERM/SIGKILL 정상 동작
+- **코드 리뷰/버그 판단 기준**: Linux 동작을 우선시하고, Windows 관련 분기 코드는 로컬 개발용으로만 간주
+- **FD 모니터링**: `/proc/self/fd` 로 현재 FD 수 추적 (`FD_WARNING_THRESHOLD=800`, `FD_CRITICAL_THRESHOLD=950`)
+- **동시성 제어**: `MAX_CONCURRENT_BROWSERS` 세마포어 + 프로필 락(fcntl)
+- **Chrome 버전**: **146 고정** (EC2에 설치된 Chrome 도 146). `version_main=146` 하드코딩은 의도된 것이며 버그가 아님. 버전 변경 시 운영팀이 수동으로 업데이트.
 
 ---
 
