@@ -1270,9 +1270,15 @@ class ChromeDriver(driver.Driver):
 
         elapsed = time.time() - start_time
         if elapsed > timeout:
-            logger.warning(
-                "Browser startup took %.1fs (exceeded timeout of %.1fs)",
+            logger.error(
+                "Browser startup exceeded timeout: took %.1fs (limit %.1fs); "
+                "treating as startup failure and forcing cleanup",
                 elapsed, timeout
+            )
+            self._partial_browser = browser
+            self._cleanup_partial_browser()
+            raise TimeoutError(
+                f"Browser startup exceeded timeout: {elapsed:.1f}s > {timeout:.1f}s"
             )
 
         self._partial_browser = None

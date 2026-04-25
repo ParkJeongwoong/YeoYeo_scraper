@@ -210,6 +210,23 @@ class TestChromeDriverInitialization:
         mock_apply.assert_called_once_with(browser)
         mock_force_kill.assert_not_called()
 
+    def test_start_browser_safe_treats_timeout_exceedance_as_failure(self):
+        instance = self._make_instance()
+        options = MagicMock()
+        browser = MagicMock()
+
+        with patch.object(instance, "_startBrowser", return_value=browser), patch(
+            "chromeDriver.time.time", side_effect=[100.0, 161.2]
+        ), patch(
+            "chromeDriver.logger.error"
+        ), patch.object(instance, "_cleanup_partial_browser") as mock_cleanup:
+            with pytest.raises(TimeoutError, match="Browser startup exceeded timeout"):
+                instance._startBrowserSafe(options, timeout=60.0)
+
+        assert instance._partial_browser is browser
+        mock_cleanup.assert_called_once_with()
+        instance._closed = True
+
     def test_get_driver_wipes_profile_and_retries_with_same_profile_on_failure(self):
         """
         When attempt 1 with the configured profile fails, attempt 2 MUST:
@@ -257,6 +274,44 @@ class TestChromeDriverInitialization:
         mock_capture.assert_called_once_with(browser)
         mock_health_check.assert_called_once_with(browser)
         mock_apply.assert_called_once_with(browser)
+
+    def test_get_driver_retries_after_startup_timeout(self):
+        instance = self._make_instance()
+        initial_options = MagicMock()
+        retry_browser = MagicMock()
+
+        with patch.object(
+            instance,
+            "_startBrowserSafe",
+            side_effect=[TimeoutError("Browser startup exceeded timeout"), retry_browser],
+        ) as mock_start_browser_safe, patch.object(
+            instance, "_capture_cleanup_metadata", return_value={"servicePort": 1234}
+        ) as mock_capture, patch.object(
+            instance, "_perform_startup_health_check", return_value=True
+        ) as mock_health_check, patch.object(
+            instance, "_applyLanguageOverrides"
+        ) as mock_apply, patch.object(
+            instance, "_wipe_profile_directory_preserving_lock", return_value=True
+        ) as mock_wipe, patch(
+            "chromeDriver._cleanup_orphan_processes_for_profile"
+        ) as mock_orphan_cleanup:
+            result = instance.getDriver(initial_options)
+
+        retry_options = mock_start_browser_safe.call_args_list[1].args[0]
+        assert result is retry_browser
+        assert retry_options is instance.options
+        assert retry_options is not initial_options
+        assert any(
+            argument.startswith(ChromeDriver.USER_DATA_DIR_ARGUMENT_PREFIX)
+            and argument.endswith(instance.chrome_profile_path)
+            for argument in retry_options.arguments
+        )
+        assert mock_start_browser_safe.call_count == 2
+        mock_wipe.assert_called_once_with(instance.chrome_profile_path)
+        mock_orphan_cleanup.assert_called_once_with("/tmp/profile")
+        mock_capture.assert_called_once_with(retry_browser)
+        mock_health_check.assert_called_once_with(retry_browser)
+        mock_apply.assert_called_once_with(retry_browser)
 
 
 class TestWipeProfileDirectory:
