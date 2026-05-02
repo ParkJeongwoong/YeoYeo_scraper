@@ -1,4 +1,5 @@
 from selenium.webdriver.remote.webelement import WebElement
+from selenium.common.exceptions import NoSuchElementException
 from bs4 import BeautifulSoup as bs
 import re
 import datetime
@@ -68,6 +69,30 @@ class SimpleManagementController:
             './div[contains(@class, "SimpleManagement__content")]',
         )
         log.info(f"reservationList length: {len(reservationList)}")
-        targetDiv = driver.findChildElement(reservationList[idxOfDate], "div")
-        targetButton = driver.findChildElement(targetDiv, "label")
-        return targetButton
+        targetCell = reservationList[idxOfDate]
+        labelList = driver.findChildElementsByXpath(targetCell, ".//label")
+        if len(labelList) > 0:
+            return labelList[0]
+
+        log.info(
+            "Target reservation label missing: "
+            f"roomIndex={targetRoomValue}, dateIndex={idxOfDate}, "
+            f"cellText={self._safeElementText(targetCell)}, "
+            f"cellHtml={self._safeOuterHtml(targetCell)}"
+        )
+        raise NoSuchElementException(
+            "Unable to locate reservation label in target cell "
+            f"(roomIndex={targetRoomValue}, dateIndex={idxOfDate})"
+        )
+
+    def _safeElementText(self, element: WebElement) -> str:
+        try:
+            return str(element.text)[:500]
+        except Exception:
+            return ""
+
+    def _safeOuterHtml(self, element: WebElement) -> str:
+        try:
+            return str(element.get_attribute("outerHTML"))[:1000]
+        except Exception:
+            return ""
