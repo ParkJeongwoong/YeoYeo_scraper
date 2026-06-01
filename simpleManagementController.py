@@ -10,7 +10,7 @@ import log
 class SimpleManagementController:
     def findTargetPage(self, driver, targetDate: datetime.date) -> int:
         html = driver.getPageSource()
-        searchLimit = 30
+        searchLimit = 35
         while searchLimit > 0:
             idx = self.findTargetPeriod(targetDate, html, driver)
             if idx != -1:
