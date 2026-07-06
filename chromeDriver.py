@@ -789,6 +789,10 @@ class ChromeDriver(driver.Driver):
     )
 
     def __init__(self, skip_fd_check: bool = False):
+        # Treat the object as closed until resource acquisition begins. This
+        # prevents __del__ from reporting cleanup warnings when pre-flight
+        # validation fails before any browser resources exist.
+        self._closed = True
         # Pre-flight FD check
         if not skip_fd_check:
             self._check_fd_availability()
@@ -1325,6 +1329,7 @@ class ChromeDriver(driver.Driver):
             
             if not browser_alive and not service_alive:
                 logger.info("Browser quit successfully, all processes terminated")
+                self._close_webdriver_transport(browser)
                 return
             else:
                 logger.warning(
@@ -1342,14 +1347,7 @@ class ChromeDriver(driver.Driver):
                 if not _terminate_process_tree(pid, timeout=PROCESS_KILL_TIMEOUT):
                     logger.error("Failed to terminate %s process tree: pid=%d", name, pid)
         
-        # Close subprocess pipes if accessible
-        if service_process is not None:
-            for pipe in (service_process.stdin, service_process.stdout, service_process.stderr):
-                if pipe is not None:
-                    try:
-                        pipe.close()
-                    except Exception:
-                        pass
+        self._close_webdriver_transport(browser)
 
     def _startBrowser(self, options) -> uc.Chrome:
         return uc.Chrome(
@@ -1474,8 +1472,8 @@ Object.defineProperty(navigator, 'languages', {{
             # Force kill any remaining processes
             self._cleanup_linux_processes()
         
-        # Step 2: Close subprocess pipes
-        self._close_subprocess_pipes(browser)
+        # Step 2: Close WebDriver HTTP pools and subprocess pipes
+        self._close_webdriver_transport(browser)
         
         # Step 3: Final cleanup
         cleanup_elapsed = time.time() - cleanup_start_time
@@ -1549,6 +1547,19 @@ Object.defineProperty(navigator, 'languages', {{
                 logger.error("Failed to terminate %s process: pid=%d", name, pid)
         
         return all_terminated
+
+    def _close_webdriver_transport(self, browser):
+        """Close WebDriver-side sockets and subprocess pipes."""
+        try:
+            command_executor = getattr(browser, "command_executor", None)
+            close_executor = getattr(command_executor, "close", None)
+            if callable(close_executor):
+                close_executor()
+                logger.debug("Closed WebDriver command executor")
+        except Exception:
+            logger.exception("Failed to close WebDriver command executor")
+
+        self._close_subprocess_pipes(browser)
     
     def _close_subprocess_pipes(self, browser):
         """Close any open subprocess pipes to prevent FD leaks."""

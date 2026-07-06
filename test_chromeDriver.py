@@ -1,9 +1,17 @@
+import gc
+import logging
 import signal
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from chromeDriver import BrowserStartupError, ChromeDriver, FORCE_KILL_SIGNAL, _is_pid_alive
+from chromeDriver import (
+    BrowserStartupError,
+    ChromeDriver,
+    FDExhaustedError,
+    FORCE_KILL_SIGNAL,
+    _is_pid_alive,
+)
 
 
 class TestChromeDriverClose:
@@ -29,6 +37,7 @@ class TestChromeDriverClose:
 
     def test_close_does_not_run_fallback_when_quit_succeeds(self):
         browser = MagicMock()
+        browser.command_executor = MagicMock()
         instance = self._make_instance(driver=browser)
 
         with patch.object(instance, "_cleanup_linux_processes", return_value=True) as mock_cleanup:
@@ -36,9 +45,21 @@ class TestChromeDriverClose:
             instance.close()
 
         browser.quit.assert_called_once()
+        browser.command_executor.close.assert_called_once()
         mock_cleanup.assert_not_called()
         assert instance.driver is None
         assert instance._closed is True
+
+    def test_close_closes_webdriver_transport_after_uc_quit(self):
+        browser = MagicMock()
+        browser.command_executor = MagicMock()
+        instance = self._make_instance(driver=browser)
+
+        with patch.object(instance, "_verify_and_force_terminate_processes", return_value=True):
+            instance.close()
+
+        browser.quit.assert_called_once()
+        browser.command_executor.close.assert_called_once()
 
     def test_close_runs_fallback_when_quit_fails(self):
         browser = MagicMock()
@@ -226,6 +247,27 @@ class TestChromeDriverInitialization:
         assert instance._partial_browser is browser
         mock_cleanup.assert_called_once_with()
         instance._closed = True
+
+    def test_force_kill_browser_closes_transport_when_quit_terminates_processes(self):
+        instance = self._make_instance()
+        browser = MagicMock()
+        browser.browser_pid = 222
+        browser.command_executor = MagicMock()
+        service_process = MagicMock()
+        service_process.pid = 111
+        service_process.stdin = MagicMock()
+        service_process.stdout = MagicMock()
+        service_process.stderr = MagicMock()
+        browser.service.process = service_process
+
+        with patch("chromeDriver._is_pid_alive", return_value=False), patch("chromeDriver.time.sleep"):
+            instance._force_kill_browser(browser)
+
+        browser.quit.assert_called_once()
+        browser.command_executor.close.assert_called_once()
+        service_process.stdin.close.assert_called_once()
+        service_process.stdout.close.assert_called_once()
+        service_process.stderr.close.assert_called_once()
 
     def test_get_driver_wipes_profile_and_retries_with_same_profile_on_failure(self):
         """
@@ -486,6 +528,20 @@ class TestChromeDriverCleanupGuards:
         instance.close()
 
         assert instance._closed is True
+
+    def test_fd_check_failure_does_not_log_not_properly_closed_warning(self, caplog):
+        gc.collect()
+        caplog.set_level(logging.WARNING, logger="chromeDriver")
+        caplog.clear()
+
+        with patch("chromeDriver.get_fd_count", return_value=999), patch(
+            "chromeDriver.log_fd_status"
+        ):
+            with pytest.raises(FDExhaustedError):
+                ChromeDriver()
+
+        gc.collect()
+        assert "ChromeDriver was not properly closed" not in caplog.text
 
     def test_del_handles_missing_internal_state(self):
         instance = ChromeDriver.__new__(ChromeDriver)
