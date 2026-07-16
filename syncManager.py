@@ -168,13 +168,17 @@ def performLogin(
     네이버 로그인 수행
     """
     sessionId = sessionId or datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    loginButtonSelector = "#log\\.login"
+    loginButtonSelectors = ["#loginBtn_row", "#log\\.login"]
 
     try:
         driverInstance.goTo(naverLoginUrl)
         log.info("네이버 로그인 페이지 이동")
         driverInstance.login(id, pw)
-        driverInstance.waitForAnySelector([loginButtonSelector], timeout=10)
+        matchedLoginButton = driverInstance.waitForAnySelector(
+            loginButtonSelectors, timeout=10
+        )
+        loginButtonSelector = matchedLoginButton["selector"]
+        log.info(f"[Login] Login button detected: selector={loginButtonSelector}")
         driverInstance.findBySelector(loginButtonSelector).click()
         log.info("로그인 성공")
         randomSleep(driverInstance)

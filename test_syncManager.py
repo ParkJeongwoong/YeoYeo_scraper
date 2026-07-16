@@ -158,13 +158,34 @@ class TestPerformLogin:
     def test_waits_for_login_button_before_clicking(self, mock_real_sleep, mock_sleep):
         mock_driver = MagicMock()
         mock_driver.getCurrentUrl.return_value = "https://www.naver.com/"
+        mock_driver.waitForAnySelector.return_value = {
+            "selector": "#loginBtn_row",
+            "count": 1,
+        }
 
         target_loaded = performLogin(mock_driver, "login_test_session")
 
         assert target_loaded is False
         mock_driver.waitForAnySelector.assert_called_once_with(
-            ["#log\\.login"], timeout=10
+            ["#loginBtn_row", "#log\\.login"], timeout=10
         )
+        mock_driver.findBySelector.assert_called_once_with("#loginBtn_row")
+        mock_driver.findBySelector.return_value.click.assert_called_once_with()
+
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    def test_falls_back_to_legacy_login_button(self, mock_real_sleep, mock_sleep):
+        mock_driver = MagicMock()
+        mock_driver.getCurrentUrl.return_value = "https://www.naver.com/"
+        mock_driver.waitForAnySelector.return_value = {
+            "selector": "#log\\.login",
+            "count": 1,
+        }
+
+        performLogin(mock_driver, "login_test_session")
+
         mock_driver.findBySelector.assert_called_once_with("#log\\.login")
         mock_driver.findBySelector.return_value.click.assert_called_once_with()
 
