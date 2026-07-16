@@ -9,6 +9,8 @@ from syncManager import (
     getNaverReservation,
     ReservationLookupError,
     RoomType,
+    _isNaverFinalizeUrl,
+    performLogin,
     waitForBookingListDom,
 )
 
@@ -76,6 +78,95 @@ class TestMakeTargetDateList:
     def test_duplicate_dates(self):
         result = makeTargetDateList("2024-08-19,2024-08-19,2024-08-20")
         assert len(result) == 3
+
+
+class TestPerformLogin:
+    @pytest.mark.parametrize(
+        "version",
+        ["v3", "v4", "v5", "v10"],
+    )
+    def test_recognizes_versioned_naver_finalize_urls(self, version):
+        assert _isNaverFinalizeUrl(
+            f"https://nid.naver.com/signin/{version}/finalize?url=https%3A%2F%2Fexample.com"
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://nid.naver.com/nidlogin.login",
+            "https://nid.naver.com/signin/v4/captcha",
+            "https://evil.example/signin/v4/finalize",
+            "https://nid.naver.com/signin/version4/finalize",
+        ],
+    )
+    def test_does_not_treat_other_login_urls_as_finalize(self, url):
+        assert not _isNaverFinalizeUrl(url)
+
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.collectPageDiagnostics")
+    def test_captures_diagnostics_when_login_button_is_missing(
+        self, mock_collect_diagnostics
+    ):
+        mock_driver = MagicMock()
+        mock_driver.waitForAnySelector.side_effect = TimeoutError("button missing")
+        mock_driver.getCurrentUrl.return_value = "https://nid.naver.com/nidlogin.login"
+
+        with pytest.raises(ReservationLookupError) as exc_info:
+            performLogin(mock_driver, "login_test_session")
+
+        assert exc_info.value.sessionId == "login_test_session"
+        mock_collect_diagnostics.assert_called_once_with(
+            mock_driver, "login_failed", "login_test_session", forceWrite=True
+        )
+        mock_driver.findBySelector.assert_not_called()
+
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.collectPageDiagnostics")
+    def test_resumes_at_target_when_login_has_moved_to_finalize(
+        self, mock_collect_diagnostics
+    ):
+        finalize_url = (
+            "https://nid.naver.com/signin/v3/finalize?"
+            "url=https%3A%2F%2Fprod-partner.io.naver.com%2Fbizes%2F899762%2F"
+            "simple-management&svctype=1"
+        )
+        target_url = "https://partner.booking.naver.com/bizes/899762/booking-list-view"
+        mock_driver = MagicMock()
+        mock_driver.waitForAnySelector.side_effect = TimeoutError("button missing")
+        mock_driver.getCurrentUrl.side_effect = [finalize_url, finalize_url, target_url]
+
+        target_loaded = performLogin(
+            mock_driver, "login_test_session", targetUrl=target_url
+        )
+
+        assert target_loaded is True
+        mock_driver.wait.assert_called_once_with(10)
+        mock_driver.goTo.assert_any_call(target_url)
+        mock_collect_diagnostics.assert_called_once_with(
+            mock_driver,
+            "login_finalize_detected",
+            "login_test_session",
+            forceWrite=True,
+        )
+
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    def test_waits_for_login_button_before_clicking(self, mock_real_sleep, mock_sleep):
+        mock_driver = MagicMock()
+        mock_driver.getCurrentUrl.return_value = "https://www.naver.com/"
+
+        target_loaded = performLogin(mock_driver, "login_test_session")
+
+        assert target_loaded is False
+        mock_driver.waitForAnySelector.assert_called_once_with(
+            ["#log\\.login"], timeout=10
+        )
+        mock_driver.findBySelector.assert_called_once_with("#log\\.login")
+        mock_driver.findBySelector.return_value.click.assert_called_once_with()
 
 
 class TestSyncNaver:

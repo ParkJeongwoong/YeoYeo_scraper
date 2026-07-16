@@ -1,11 +1,13 @@
 import datetime
 import json
 import os
+import re
 import shutil
 import time
 from enum import Enum
 from random import randint
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -113,17 +115,107 @@ def checkLoginSession(driverInstance: driver.Driver) -> bool:
         return False
 
 
-def performLogin(driverInstance: driver.Driver):
+def _isNaverFinalizeUrl(url: str) -> bool:
+    if not isinstance(url, str) or not url:
+        return False
+
+    parsedUrl = urlparse(url)
+    return (
+        parsedUrl.hostname == "nid.naver.com"
+        and re.fullmatch(r"/signin/v\d+/finalize/?", parsedUrl.path) is not None
+    )
+
+
+def _resumeFromNaverFinalize(
+    driverInstance: driver.Driver,
+    currentUrl: str,
+    targetUrl: Optional[str],
+    sessionId: str,
+) -> bool:
+    waitSeconds = 10
+    log.info(
+        f"[Login Recovery] Naver finalize URL detected: currentUrl={currentUrl}, "
+        f"targetUrl={targetUrl}, waitSeconds={waitSeconds}"
+    )
+    _safeDriverCall(
+        lambda: collectPageDiagnostics(
+            driverInstance, "login_finalize_detected", sessionId, forceWrite=True
+        ),
+        None,
+    )
+    driverInstance.wait(waitSeconds)
+
+    afterWaitUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
+    log.info(f"[Login Recovery] Finalize wait complete: currentUrl={afterWaitUrl}")
+    if not targetUrl:
+        return False
+
+    driverInstance.goTo(targetUrl)
+    destinationUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
+    log.info(
+        f"[Login Recovery] Navigated to intended page: "
+        f"requestedUrl={targetUrl}, currentUrl={destinationUrl}"
+    )
+    return True
+
+
+def performLogin(
+    driverInstance: driver.Driver,
+    sessionId: Optional[str] = None,
+    targetUrl: Optional[str] = None,
+) -> bool:
     """
     네이버 로그인 수행
     """
-    driverInstance.goTo(naverLoginUrl)
-    log.info("네이버 로그인 페이지 이동")
-    driverInstance.login(id, pw)
-    driverInstance.findBySelector("#log\\.login").click()
-    log.info("로그인 성공")
-    randomSleep(driverInstance)
-    randomRealSleep()
+    sessionId = sessionId or datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    loginButtonSelector = "#log\\.login"
+
+    try:
+        driverInstance.goTo(naverLoginUrl)
+        log.info("네이버 로그인 페이지 이동")
+        driverInstance.login(id, pw)
+        driverInstance.waitForAnySelector([loginButtonSelector], timeout=10)
+        driverInstance.findBySelector(loginButtonSelector).click()
+        log.info("로그인 성공")
+        randomSleep(driverInstance)
+        randomRealSleep()
+    except Exception as e:
+        currentUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
+        log.error(f"Naver login error: currentUrl={currentUrl}", e)
+        if _isNaverFinalizeUrl(currentUrl):
+            try:
+                return _resumeFromNaverFinalize(
+                    driverInstance, currentUrl, targetUrl, sessionId
+                )
+            except Exception as recoveryError:
+                recoveryUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
+                log.error(
+                    f"Naver finalize recovery failed: currentUrl={recoveryUrl}, "
+                    f"targetUrl={targetUrl}",
+                    recoveryError,
+                )
+                e = recoveryError
+
+        # Login failures happen before the normal booking-page diagnostics. Force a
+        # snapshot while the browser is still alive so /debug/view can show the page.
+        _safeDriverCall(
+            lambda: collectPageDiagnostics(
+                driverInstance, "login_failed", sessionId, forceWrite=True
+            ),
+            None,
+        )
+        log.info(f"Login failure diagnostics collected: sessionId={sessionId}")
+        raise ReservationLookupError(
+            f"naver login failed at {currentUrl}: {type(e).__name__}: {e}", sessionId
+        ) from e
+
+    currentUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
+    log.info(f"[Login] Post-login URL check: currentUrl={currentUrl}")
+    if _isNaverFinalizeUrl(currentUrl):
+        return _resumeFromNaverFinalize(
+            driverInstance, currentUrl, targetUrl, sessionId
+        )
+    return False
 
 
 def randomSleep(dirver: driver.Driver):
@@ -367,14 +459,18 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> lis
     reservationManager = simpleManagementController.SimpleManagementController()
     
     # 세션 확인 후 로그인 스킵 또는 진행
+    targetPageLoaded = False
     if not checkLoginSession(driver):
-        performLogin(driver)
+        targetPageLoaded = performLogin(
+            driver, targetUrl=simpleReservationManagementUrl
+        )
 
     log.info(
         f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
     )
 
-    driver.goTo(simpleReservationManagementUrl)
+    if not targetPageLoaded:
+        driver.goTo(simpleReservationManagementUrl)
     log.info("간단예약관리 페이지 이동")
     randomSleep(driver)
     randomRealSleep()
@@ -404,15 +500,17 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
     sessionId = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     
     # 세션 확인 후 로그인 스킵 또는 진행
+    targetPageLoaded = False
     if not checkLoginSession(driver):
-        performLogin(driver)
+        targetPageLoaded = performLogin(driver, sessionId, bookingListUrl)
     
     log.info(
         f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
     )
     collectPageDiagnostics(driver, "after_login", sessionId)
 
-    driver.goTo(bookingListUrl)
+    if not targetPageLoaded:
+        driver.goTo(bookingListUrl)
     log.info("예약자관리 페이지 이동")
     randomSleep(driver)
     randomRealSleep()

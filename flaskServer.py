@@ -477,6 +477,8 @@ def pickDefaultDiagnosticFile(files: list, statusCode: str):
 
     if statusCode != "ok":
         preferredStageKeywords = [
+            "login_failed",
+            "login_finalize_detected",
             "_next_error",
             "_next_missing",
             "_timeout",
