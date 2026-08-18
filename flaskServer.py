@@ -220,8 +220,9 @@ toggle_state_result_model = api.model('ReservationToggleStateResult', {
     'reservationCount': fields.String(description='예약 수량'),
     'status': fields.String(
         description='판매 상태',
-        enum=['available', 'naverBlocked', 'externallyBlocked'],
+        enum=['available', 'naverBlocked', 'externallyBlocked', 'error'],
     ),
+    'errorDescription': fields.String(description='status가 error인 경우 상세 사유'),
 })
 
 toggle_state_response_model = api.model('ReservationToggleStateResponse', {
@@ -361,7 +362,30 @@ class ReservationToggleState(Resource):
             }, 200
         except simpleManagementController.ToggleStateInspectionError as e:
             log.error(f"판매 상태 조회 실패: {e.code}", e)
-            return {"message": "Reservation toggle state inspection failed", "code": e.code}, 400
+            expectedInspectionErrors = {
+                "DATE_NOT_AVAILABLE_IN_NAVER_CALENDAR",
+                "TARGET_CELL_NOT_FOUND",
+                "TARGET_TOGGLE_NOT_FOUND",
+            }
+            if e.code in expectedInspectionErrors:
+                return {
+                    "message": "Reservation toggle state inspected with errors",
+                    "targetDate": str(targetDate),
+                    "results": [
+                        {
+                            "room": room,
+                            "date": str(targetDate),
+                            "reservationCount": None,
+                            "status": "error",
+                            "errorDescription": e.code,
+                        }
+                        for room in simpleManagementController.SimpleManagementController.ROOM_NAMES
+                    ],
+                }, 200
+            return {
+                "message": "Reservation toggle state inspection failed",
+                "code": e.code,
+            }, 500
         except (FDExhaustedError, TimeoutError) as e:
             log.error("판매 상태 조회를 위한 브라우저 리소스 확보 실패", e)
             return {"message": "Service unavailable"}, 503

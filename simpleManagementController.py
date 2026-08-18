@@ -124,11 +124,17 @@ class SimpleManagementController:
                 './/input[contains(concat(" ", normalize-space(@class), " "), " switch-input-check ")]',
             )
             if not checkboxes:
-                raise ToggleStateInspectionError("TARGET_TOGGLE_NOT_FOUND")
+                results.append(self.makeErrorResult(
+                    roomName, targetDate, "TARGET_TOGGLE_NOT_FOUND"
+                ))
+                continue
 
             countButtons = driver.findChildElementsByXpath(targetCell, ".//button")
             if not countButtons:
-                raise ToggleStateInspectionError("TARGET_CELL_NOT_FOUND")
+                results.append(self.makeErrorResult(
+                    roomName, targetDate, "TARGET_CELL_NOT_FOUND"
+                ))
+                continue
 
             checkbox = checkboxes[0]
             switchOn = bool(checkbox.is_selected())
@@ -140,6 +146,17 @@ class SimpleManagementController:
                 "status": self.classifyStatus(reservationCount, switchOn),
             })
         return results
+
+    def makeErrorResult(
+        self, roomName: str, targetDate: datetime.date, description: str
+    ) -> dict:
+        return {
+            "room": roomName,
+            "date": str(targetDate),
+            "reservationCount": None,
+            "status": "error",
+            "errorDescription": description,
+        }
 
     def classifyStatus(self, reservationCount: str, switchOn: bool) -> str:
         if not switchOn:

@@ -239,7 +239,7 @@ class TestInspectToggleStates:
 
         driver.findChildElementsByXpath.side_effect = without_checkbox
 
-        with pytest.raises(ToggleStateInspectionError) as exc_info:
-            controller.inspectToggleStates(driver, datetime.date(2026, 8, 22))
+        result = controller.inspectToggleStates(driver, datetime.date(2026, 8, 22))
 
-        assert exc_info.value.code == "TARGET_TOGGLE_NOT_FOUND"
+        assert result[0]["status"] == "error"
+        assert result[0]["errorDescription"] == "TARGET_TOGGLE_NOT_FOUND"

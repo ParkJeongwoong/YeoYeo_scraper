@@ -467,7 +467,8 @@ class TestChromeDriverOptions:
 
         options = instance._buildOptions(include_profile=False)
 
-        assert f"--lang={ChromeDriver.STARTUP_LANGUAGE}" in options.arguments
+        assert ChromeDriver.STARTUP_LANGUAGE == "ko-KR"
+        assert "--lang=ko-KR" in options.arguments
         assert "prefs" not in options.experimental_options
 
 

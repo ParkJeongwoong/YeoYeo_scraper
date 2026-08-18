@@ -101,7 +101,7 @@ class TestDiagnosticEndpoints:
 
     @patch('flaskServer.syncManager.inspectReservationToggleState')
     @patch('flaskServer.create_browser')
-    def test_reservation_toggle_state_returns_structured_dom_error(
+    def test_reservation_toggle_state_returns_server_error_for_dom_change(
         self, mock_create_browser, mock_inspect, client, valid_activation_key
     ):
         mock_create_browser.return_value.__enter__.return_value = MagicMock()
@@ -112,8 +112,31 @@ class TestDiagnosticEndpoints:
             "targetDate": "2026-08-22",
         })
 
-        assert response.status_code == 400
+        assert response.status_code == 500
         assert response.get_json()["code"] == "DOM_STRUCTURE_CHANGED"
+
+    @patch('flaskServer.syncManager.inspectReservationToggleState')
+    @patch('flaskServer.create_browser')
+    def test_reservation_toggle_state_returns_error_status_for_unavailable_date(
+        self, mock_create_browser, mock_inspect, client, valid_activation_key
+    ):
+        mock_create_browser.return_value.__enter__.return_value = MagicMock()
+        mock_inspect.side_effect = ToggleStateInspectionError(
+            "DATE_NOT_AVAILABLE_IN_NAVER_CALENDAR"
+        )
+
+        response = client.post('/debug/reservation-toggle-state', json={
+            "activationKey": valid_activation_key,
+            "targetDate": "2026-08-22",
+        })
+
+        assert response.status_code == 200
+        assert [result["status"] for result in response.get_json()["results"]] == [
+            "error", "error"
+        ]
+        assert response.get_json()["results"][0]["errorDescription"] == (
+            "DATE_NOT_AVAILABLE_IN_NAVER_CALENDAR"
+        )
 
     def test_list_diagnostic_sessions(self, client, valid_activation_key, tmp_path, monkeypatch):
         ok_session_dir = tmp_path / "20260321_090000_000001"
