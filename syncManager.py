@@ -500,6 +500,24 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> lis
     return successDates
 
 
+def inspectReservationToggleState(driver: driver.Driver, targetDate: datetime.date) -> list:
+    """Inspect all supported rooms for one date without changing Naver state."""
+    targetPageLoaded = False
+    if not checkLoginSession(driver):
+        targetPageLoaded = performLogin(
+            driver, targetUrl=simpleReservationManagementUrl
+        )
+
+    if not targetPageLoaded:
+        driver.goTo(simpleReservationManagementUrl)
+    log.info("간단예약관리 판매 상태 조회 페이지 이동")
+    randomSleep(driver)
+    randomRealSleep()
+
+    reservationManager = simpleManagementController.SimpleManagementController()
+    return reservationManager.inspectToggleStates(driver, targetDate)
+
+
 def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
     sessionId = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     
