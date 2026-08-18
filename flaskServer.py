@@ -218,8 +218,10 @@ toggle_state_result_model = api.model('ReservationToggleStateResult', {
     'room': fields.String(description='객실', enum=['Yeoyu', 'Yeohang']),
     'date': fields.String(description='조회 날짜'),
     'reservationCount': fields.String(description='예약 수량'),
-    'switchOn': fields.Boolean(description='외부 판매 스위치 ON 여부'),
-    'externallyBlocked': fields.Boolean(description='외부 예약 차단 여부'),
+    'status': fields.String(
+        description='판매 상태',
+        enum=['available', 'naverBlocked', 'externallyBlocked'],
+    ),
 })
 
 toggle_state_response_model = api.model('ReservationToggleStateResponse', {

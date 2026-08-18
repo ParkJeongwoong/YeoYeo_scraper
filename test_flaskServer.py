@@ -67,8 +67,7 @@ class TestDiagnosticEndpoints:
         mock_create_browser.return_value.__enter__.return_value = driver
         mock_inspect.return_value = [{
             "room": "Yeoyu", "date": "2026-08-22",
-            "reservationCount": "0/1", "switchOn": False,
-            "externallyBlocked": True,
+            "reservationCount": "0/1", "status": "externallyBlocked",
         }]
 
         response = client.post('/debug/reservation-toggle-state', json={
@@ -77,7 +76,8 @@ class TestDiagnosticEndpoints:
         })
 
         assert response.status_code == 200
-        assert response.get_json()["results"][0]["externallyBlocked"] is True
+        assert response.get_json()["results"][0]["status"] == "externallyBlocked"
+        assert "switchOn" not in response.get_json()["results"][0]
         mock_inspect.assert_called_once_with(driver, datetime.date(2026, 8, 22))
         mock_create_browser.return_value.__exit__.assert_called_once()
 

@@ -132,14 +132,27 @@ class SimpleManagementController:
 
             checkbox = checkboxes[0]
             switchOn = bool(checkbox.is_selected())
+            reservationCount = countButtons[0].text.strip()
             results.append({
                 "room": roomName,
                 "date": str(targetDate),
-                "reservationCount": countButtons[0].text.strip(),
-                "switchOn": switchOn,
-                "externallyBlocked": not switchOn,
+                "reservationCount": reservationCount,
+                "status": self.classifyStatus(reservationCount, switchOn),
             })
         return results
+
+    def classifyStatus(self, reservationCount: str, switchOn: bool) -> str:
+        if not switchOn:
+            return "externallyBlocked"
+
+        match = re.fullmatch(r"(\d+)\s*/\s*(\d+)", reservationCount)
+        if match is None:
+            raise ToggleStateInspectionError("DOM_STRUCTURE_CHANGED")
+
+        reserved, capacity = map(int, match.groups())
+        if reserved >= capacity:
+            return "naverBlocked"
+        return "available"
 
     def extractDateHeaders(self, html: str) -> list:
         soup = bs(html, "html.parser")

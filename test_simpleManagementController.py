@@ -180,16 +180,38 @@ class TestInspectToggleStates:
         assert result == [
             {
                 "room": "Yeoyu", "date": "2026-08-22",
-                "reservationCount": "1/1", "switchOn": True,
-                "externallyBlocked": False,
+                "reservationCount": "1/1", "status": "naverBlocked",
             },
             {
                 "room": "Yeohang", "date": "2026-08-22",
-                "reservationCount": "0/1", "switchOn": False,
-                "externallyBlocked": True,
+                "reservationCount": "0/1", "status": "externallyBlocked",
             },
         ]
         driver.executeScript.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("reservation_count", "switch_on", "expected"),
+        [
+            ("0/1", True, "available"),
+            ("1/1", True, "naverBlocked"),
+            ("0/1", False, "externallyBlocked"),
+            ("1/1", False, "externallyBlocked"),
+        ],
+    )
+    def test_classifies_normalized_status(
+        self, reservation_count, switch_on, expected
+    ):
+        controller = SimpleManagementController()
+
+        assert controller.classifyStatus(reservation_count, switch_on) == expected
+
+    def test_rejects_unrecognized_reservation_count(self):
+        controller = SimpleManagementController()
+
+        with pytest.raises(ToggleStateInspectionError) as exc_info:
+            controller.classifyStatus("예약 마감", True)
+
+        assert exc_info.value.code == "DOM_STRUCTURE_CHANGED"
 
     def test_rejects_date_and_cell_count_mismatch(self, monkeypatch):
         controller = SimpleManagementController()
