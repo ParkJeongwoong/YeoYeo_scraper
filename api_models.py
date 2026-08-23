@@ -48,8 +48,8 @@ def register_api_models(api: Api) -> ApiModels:
             enum=["Yeoyu", "Yeohang"],
         ),
         "desiredState": fields.String(
-            required=True,
-            description="목표 외부 판매 상태",
+            required=False,
+            description="목표 외부 판매 상태. 생략 시 레거시 토글 방식 사용",
             enum=["available", "externallyBlocked"],
         ),
     })

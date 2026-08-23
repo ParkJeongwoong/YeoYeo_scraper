@@ -331,7 +331,7 @@ class TestDiagnosticEndpoints:
 
 
 class TestSyncNaverReservation:
-    @patch('flaskServer.syncManager.SyncNaver')
+    @patch('flaskServer.syncManager.SyncNaverIdempotent')
     @patch('flaskServer.chromeDriver.ChromeDriver')
     def test_sync_in_success(self, mock_chrome_driver, mock_sync_naver, client, valid_activation_key):
         mock_driver_instance = MagicMock()
@@ -387,7 +387,7 @@ class TestSyncNaverReservation:
         assert result["message"] == "Invalid Access Key"
         mock_chrome_driver.assert_not_called()
 
-    @patch('flaskServer.syncManager.SyncNaver')
+    @patch('flaskServer.syncManager.SyncNaverIdempotent')
     @patch('flaskServer.chromeDriver.ChromeDriver')
     def test_sync_in_server_error(self, mock_chrome_driver, mock_sync_naver, client, valid_activation_key):
         mock_driver_instance = MagicMock()
@@ -412,7 +412,7 @@ class TestSyncNaverReservation:
         assert result["message"] == "Sync Naver Reservation Failed"
         mock_driver_instance.close.assert_called_once()
 
-    @patch('flaskServer.syncManager.SyncNaver')
+    @patch('flaskServer.syncManager.SyncNaverIdempotent')
     @patch('flaskServer.chromeDriver.ChromeDriver')
     def test_sync_in_yeohang_room(self, mock_chrome_driver, mock_sync_naver, client, valid_activation_key):
         mock_driver_instance = MagicMock()
@@ -441,6 +441,28 @@ class TestSyncNaverReservation:
         assert result["successDates"] == ["2024-09-05"]
         mock_sync_naver.assert_called_once_with(
             mock_driver_instance, "2024-09-05", "Yeohang", "available"
+        )
+
+    @patch('flaskServer.syncManager.SyncNaver')
+    @patch('flaskServer.chromeDriver.ChromeDriver')
+    def test_sync_in_without_desired_state_uses_legacy_flow(
+        self, mock_chrome_driver, mock_sync_naver, client, valid_activation_key
+    ):
+        mock_driver_instance = MagicMock()
+        mock_chrome_driver.return_value = mock_driver_instance
+        mock_sync_naver.return_value = ["2024-09-05"]
+        request_data = {
+            "activationKey": valid_activation_key,
+            "targetDatesStr": "2024-09-05",
+            "targetRoom": "Yeohang",
+        }
+
+        response = client.post('/sync/in', json=request_data)
+
+        assert response.status_code == 200
+        assert response.get_json()["successDates"] == ["2024-09-05"]
+        mock_sync_naver.assert_called_once_with(
+            mock_driver_instance, "2024-09-05", "Yeohang"
         )
 
     @patch('flaskServer.chromeDriver.ChromeDriver')

@@ -6,6 +6,7 @@ from syncManager import (
     makeTargetDateList,
     makeTargetDate,
     SyncNaver,
+    SyncNaverIdempotent,
     getNaverReservation,
     ReservationLookupError,
     RoomType,
@@ -191,6 +192,28 @@ class TestPerformLogin:
 
 
 class TestSyncNaver:
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    def test_legacy_sync_naver_unconditionally_clicks(
+        self, mock_real_sleep, mock_sleep
+    ):
+        mock_driver = MagicMock()
+        mock_controller = MagicMock()
+        mock_controller.findTargetPage.return_value = 0
+        target_button = MagicMock()
+        mock_controller.findTargetBtn.return_value = target_button
+
+        with patch(
+            "syncManager.simpleManagementController.SimpleManagementController",
+            return_value=mock_controller,
+        ):
+            result = SyncNaver(mock_driver, "2024-08-19", "Yeoyu")
+
+        assert result == ["2024-08-19"]
+        mock_driver.executeScript.assert_any_call(
+            "arguments[0].click();", target_button
+        )
+
     @patch("syncManager.id", "test_id")
     @patch("syncManager.pw", "test_pw")
     @patch("syncManager.randomSleep")
@@ -212,7 +235,9 @@ class TestSyncNaver:
             return_value=mock_controller,
         ):
             mock_controller.readTargetToggleState.side_effect = [False, True]
-            result = SyncNaver(mock_driver, "2024-08-19", "Yeoyu", "available")
+            result = SyncNaverIdempotent(
+                mock_driver, "2024-08-19", "Yeoyu", "available"
+            )
 
         assert result["status"] == "SUCCESS"
         assert result["successDates"] == ["2024-08-19"]
@@ -240,7 +265,7 @@ class TestSyncNaver:
             return_value=mock_controller,
         ):
             mock_controller.readTargetToggleState.side_effect = [True, True, True]
-            result = SyncNaver(
+            result = SyncNaverIdempotent(
                 mock_driver,
                 "2024-08-19,2024-08-20,2024-08-21",
                 "Yeohang",
@@ -276,7 +301,7 @@ class TestSyncNaver:
             "syncManager.simpleManagementController.SimpleManagementController",
             return_value=mock_controller,
         ):
-            result = SyncNaver(
+            result = SyncNaverIdempotent(
                 mock_driver, "2024-08-19", "Yeoyu", "externallyBlocked"
             )
 
@@ -305,7 +330,7 @@ class TestSyncNaver:
             "syncManager.simpleManagementController.SimpleManagementController",
             return_value=mock_controller,
         ):
-            result = SyncNaver(
+            result = SyncNaverIdempotent(
                 mock_driver,
                 "2024-08-19,2024-08-20,2024-08-21",
                 "Yeoyu",
@@ -331,7 +356,7 @@ class TestSyncNaver:
             "syncManager.simpleManagementController.SimpleManagementController",
             return_value=mock_controller,
         ):
-            result = SyncNaver(
+            result = SyncNaverIdempotent(
                 mock_driver,
                 "2024-08-19,2024-08-20",
                 "Yeoyu",
@@ -358,7 +383,7 @@ class TestSyncNaver:
             "syncManager.simpleManagementController.SimpleManagementController",
             return_value=mock_controller,
         ):
-            result = SyncNaver(
+            result = SyncNaverIdempotent(
                 mock_driver, "2024-08-19", "Yeoyu", "available"
             )
 

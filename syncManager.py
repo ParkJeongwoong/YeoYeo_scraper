@@ -455,6 +455,49 @@ def makeTargetDate(dateStr: str) -> datetime.date:
 
 
 def SyncNaver(
+    driver: driver.Driver, targetDateStr: str, targetRoom: str
+) -> list:
+    """Legacy unconditional toggle flow kept temporarily for API compatibility."""
+    # TODO(TW-25): Remove after every Application caller sends desiredState.
+    targetRoomEnum = RoomType[targetRoom]
+    successDates = []
+    reservationManager = simpleManagementController.SimpleManagementController()
+
+    targetPageLoaded = False
+    if not checkLoginSession(driver):
+        targetPageLoaded = performLogin(
+            driver, targetUrl=simpleReservationManagementUrl
+        )
+
+    log.info(
+        f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
+    )
+    if not targetPageLoaded:
+        driver.goTo(simpleReservationManagementUrl)
+    log.info("간단예약관리 페이지 이동")
+    randomSleep(driver)
+    randomRealSleep()
+
+    for targetDate in makeTargetDateList(targetDateStr):
+        log.info(f"{targetDate} 예약 변경 시작")
+        idxOfDate = reservationManager.findTargetPage(driver, targetDate)
+        if idxOfDate == -1:
+            log.info("해당 날짜가 존재하지 않습니다.")
+            log.info(f"{targetDate} 예약 변경 종료")
+            continue
+
+        targetBtn = reservationManager.findTargetBtn(
+            driver, idxOfDate, targetRoomEnum.value
+        )
+        driver.executeScript("arguments[0].click();", targetBtn)
+        randomSleep(driver)
+        successDates.append(str(targetDate))
+        log.info(f"{targetDate}, {targetRoomEnum.name}, 예약 변경 완료")
+
+    return successDates
+
+
+def SyncNaverIdempotent(
     driver: driver.Driver,
     targetDateStr: str,
     targetRoom: str,
