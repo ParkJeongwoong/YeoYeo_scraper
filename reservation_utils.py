@@ -5,7 +5,7 @@ KST = datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
 
 
 def parse_target_date(value: str) -> datetime.date:
-    return datetime.datetime.strptime(value, "%Y-%m-%d").date()
+    return datetime.datetime.strptime(value.strip(), "%Y-%m-%d").date()
 
 
 def parse_target_dates(value: str) -> list:

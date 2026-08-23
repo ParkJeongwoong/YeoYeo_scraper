@@ -9,6 +9,12 @@ def test_parse_target_dates_sorts_values():
     ]
 
 
+def test_parse_target_dates_allows_whitespace_around_tokens():
+    assert parse_target_dates("2026-08-23, 2026-08-24 ") == [
+        datetime.date(2026, 8, 23), datetime.date(2026, 8, 24)
+    ]
+
+
 def test_normalize_booking_lists_deduplicates_and_filters():
     now = datetime.datetime(2026, 8, 23, 12, tzinfo=KST)
     bookings = [
