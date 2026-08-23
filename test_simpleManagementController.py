@@ -1,6 +1,6 @@
 import pytest
 import datetime
-from simpleManagementController import SimpleManagementController
+from simpleManagementController import SimpleManagementController, ToggleStateInspectionError
 from unittest.mock import Mock, MagicMock
 from bs4 import BeautifulSoup as bs
 from selenium.common.exceptions import NoSuchElementException
@@ -137,3 +137,109 @@ class TestFindTargetBtn:
 
         assert "roomIndex=0" in str(exc_info.value)
         assert "dateIndex=0" in str(exc_info.value)
+
+
+class TestInspectToggleStates:
+    def _build_driver(self, switch_states=(True, False), counts=("1/1", "0/1")):
+        driver = MagicMock()
+        table = MagicMock()
+        rows = [MagicMock(), MagicMock()]
+        cells = [[MagicMock() for _ in range(7)] for _ in rows]
+        driver.getPageSource.return_value = (
+            '<a class="DatePeriodCalendar__date-info">26. 8. 19 ~ 8. 25</a>'
+        )
+        driver.findByXpath.return_value = table
+
+        def find_children(element, selector):
+            if element is table:
+                return rows
+            for row_index, row in enumerate(rows):
+                if element is row:
+                    return cells[row_index]
+                if element is cells[row_index][3]:
+                    if "input" in selector:
+                        checkbox = MagicMock()
+                        checkbox.is_selected.return_value = switch_states[row_index]
+                        return [checkbox]
+                    if selector == ".//button":
+                        button = MagicMock()
+                        button.text = counts[row_index]
+                        return [button]
+            return []
+
+        driver.findChildElementsByXpath.side_effect = find_children
+        return driver
+
+    def test_maps_each_room_and_reads_checkbox_property(self, monkeypatch):
+        controller = SimpleManagementController()
+        driver = self._build_driver()
+        monkeypatch.setattr(controller, "findTargetPage", lambda *_: 3)
+
+        result = controller.inspectToggleStates(driver, datetime.date(2026, 8, 22))
+
+        assert result == [
+            {
+                "room": "Yeoyu", "date": "2026-08-22",
+                "reservationCount": "1/1", "status": "naverBlocked",
+            },
+            {
+                "room": "Yeohang", "date": "2026-08-22",
+                "reservationCount": "0/1", "status": "externallyBlocked",
+            },
+        ]
+        driver.executeScript.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("reservation_count", "switch_on", "expected"),
+        [
+            ("0/1", True, "available"),
+            ("1/1", True, "naverBlocked"),
+            ("0/1", False, "externallyBlocked"),
+            ("1/1", False, "externallyBlocked"),
+        ],
+    )
+    def test_classifies_normalized_status(
+        self, reservation_count, switch_on, expected
+    ):
+        controller = SimpleManagementController()
+
+        assert controller.classifyStatus(reservation_count, switch_on) == expected
+
+    def test_rejects_unrecognized_reservation_count(self):
+        controller = SimpleManagementController()
+
+        with pytest.raises(ToggleStateInspectionError) as exc_info:
+            controller.classifyStatus("예약 마감", True)
+
+        assert exc_info.value.code == "DOM_STRUCTURE_CHANGED"
+
+    def test_rejects_date_and_cell_count_mismatch(self, monkeypatch):
+        controller = SimpleManagementController()
+        driver = self._build_driver()
+        monkeypatch.setattr(controller, "findTargetPage", lambda *_: 3)
+        driver.findChildElementsByXpath.side_effect = lambda element, selector: (
+            [MagicMock(), MagicMock()] if "management-row" in selector else []
+        )
+
+        with pytest.raises(ToggleStateInspectionError) as exc_info:
+            controller.inspectToggleStates(driver, datetime.date(2026, 8, 22))
+
+        assert exc_info.value.code == "DOM_STRUCTURE_CHANGED"
+
+    def test_rejects_missing_checkbox(self, monkeypatch):
+        controller = SimpleManagementController()
+        driver = self._build_driver()
+        monkeypatch.setattr(controller, "findTargetPage", lambda *_: 3)
+        original = driver.findChildElementsByXpath.side_effect
+
+        def without_checkbox(element, selector):
+            if "input" in selector:
+                return []
+            return original(element, selector)
+
+        driver.findChildElementsByXpath.side_effect = without_checkbox
+
+        result = controller.inspectToggleStates(driver, datetime.date(2026, 8, 22))
+
+        assert result[0]["status"] == "error"
+        assert result[0]["errorDescription"] == "TARGET_TOGGLE_NOT_FOUND"

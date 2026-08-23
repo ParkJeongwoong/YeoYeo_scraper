@@ -777,7 +777,7 @@ class ChromeDriver(driver.Driver):
     BROWSER_LANGUAGE = "ko-KR"
     ACCEPT_LANGUAGES = "ko-KR,ko,en-US,en"
     CDP_LOCALE = "ko_KR"
-    STARTUP_LANGUAGE = "ko_KR"
+    STARTUP_LANGUAGE = "ko-KR"
     TRUE_ENV_VALUES = ("1", "true", "yes", "on")
     DISPLAY_ENV_VARS = ("DISPLAY", "WAYLAND_DISPLAY")
     USER_DATA_DIR_ARGUMENT_PREFIX = "--user-data-dir="

@@ -3,6 +3,7 @@
 from flask import Flask, request, send_from_directory, render_template
 from flask_restx import Api, Resource, fields, Namespace
 import syncManager
+import simpleManagementController
 import chromeDriver
 from chromeDriver import (
     create_browser,
@@ -208,6 +209,33 @@ diagnostic_error_response_model = api.model('DiagnosticErrorResponse', {
     'message': fields.String(description='에러 메시지')
 })
 
+toggle_state_request_model = api.model('ReservationToggleStateRequest', {
+    'activationKey': fields.String(required=True, description='인증 키'),
+    'targetDate': fields.String(required=True, description='조회 날짜 (YYYY-MM-DD)', example='2026-08-22'),
+})
+
+toggle_state_result_model = api.model('ReservationToggleStateResult', {
+    'room': fields.String(description='객실', enum=['Yeoyu', 'Yeohang']),
+    'date': fields.String(description='조회 날짜'),
+    'reservationCount': fields.String(description='예약 수량'),
+    'status': fields.String(
+        description='판매 상태',
+        enum=['available', 'naverBlocked', 'externallyBlocked', 'error'],
+    ),
+    'errorDescription': fields.String(description='status가 error인 경우 상세 사유'),
+})
+
+toggle_state_response_model = api.model('ReservationToggleStateResponse', {
+    'message': fields.String(description='응답 메시지'),
+    'targetDate': fields.String(description='조회 날짜'),
+    'results': fields.List(fields.Nested(toggle_state_result_model)),
+})
+
+toggle_state_error_model = api.model('ReservationToggleStateError', {
+    'message': fields.String(description='에러 메시지'),
+    'code': fields.String(description='오류 코드'),
+})
+
 diagnostic_delete_response_model = api.model('DiagnosticDeleteResponse', {
     'message': fields.String(description='응답 메시지'),
     'sessionId': fields.String(description='삭제된 세션 ID')
@@ -298,6 +326,75 @@ class DiagnosticSessionList(Resource):
             "deletedSessionIds": deletedSessionIds,
             "mode": mode,
         }, 200
+
+
+@debug_ns.route('/reservation-toggle-state')
+class ReservationToggleState(Resource):
+    @debug_ns.expect(toggle_state_request_model, validate=True)
+    @debug_ns.response(200, 'Success', toggle_state_response_model)
+    @debug_ns.response(400, 'Bad Request', toggle_state_error_model)
+    @debug_ns.response(401, 'Unauthorized', toggle_state_error_model)
+    @debug_ns.response(500, 'Internal Server Error', toggle_state_error_model)
+    @debug_ns.response(503, 'Service Unavailable', toggle_state_error_model)
+    def post(self):
+        """날짜별 객실 예약 수량과 판매 스위치를 읽기 전용으로 조회"""
+        req = request.get_json()
+        if not checkActivationKey(req):
+            return {"message": "Invalid Access Key"}, 401
+
+        try:
+            targetDate = datetime.datetime.strptime(
+                req["targetDate"], "%Y-%m-%d"
+            ).date()
+        except (TypeError, ValueError):
+            return {
+                "message": "Invalid targetDate format",
+                "code": "INVALID_TARGET_DATE",
+            }, 400
+
+        try:
+            with create_browser() as driver:
+                results = syncManager.inspectReservationToggleState(driver, targetDate)
+            return {
+                "message": "Reservation toggle state inspected",
+                "targetDate": str(targetDate),
+                "results": results,
+            }, 200
+        except simpleManagementController.ToggleStateInspectionError as e:
+            log.error(f"판매 상태 조회 실패: {e.code}", e)
+            expectedInspectionErrors = {
+                "DATE_NOT_AVAILABLE_IN_NAVER_CALENDAR",
+                "TARGET_CELL_NOT_FOUND",
+                "TARGET_TOGGLE_NOT_FOUND",
+            }
+            if e.code in expectedInspectionErrors:
+                return {
+                    "message": "Reservation toggle state inspected with errors",
+                    "targetDate": str(targetDate),
+                    "results": [
+                        {
+                            "room": room,
+                            "date": str(targetDate),
+                            "reservationCount": None,
+                            "status": "error",
+                            "errorDescription": e.code,
+                        }
+                        for room in simpleManagementController.SimpleManagementController.ROOM_NAMES
+                    ],
+                }, 200
+            return {
+                "message": "Reservation toggle state inspection failed",
+                "code": e.code,
+            }, 500
+        except (FDExhaustedError, TimeoutError) as e:
+            log.error("판매 상태 조회를 위한 브라우저 리소스 확보 실패", e)
+            return {"message": "Service unavailable"}, 503
+        except BrowserStartupError as e:
+            log.error("판매 상태 조회 브라우저 기동 실패", e)
+            return {"message": "Browser startup failed"}, 500
+        except Exception as e:
+            log.error("판매 상태 조회 실패", e)
+            return {"message": "Reservation toggle state inspection failed"}, 500
 
 
 @debug_ns.route('/diagnostics/<string:session_id>/<path:filename>')
