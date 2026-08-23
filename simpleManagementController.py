@@ -27,12 +27,10 @@ class SimpleManagementController:
         dateInfo = soup.select('a[class^="DatePeriodCalendar__date-info"]')
         rawDateData = re.search(">(.*?)<", str(dateInfo)).group(1).split(" ~ ")
         log.info(rawDateData)
-        endDateParts = [part.strip() for part in rawDateData[1].split(".") if part.strip()]
-        if len(endDateParts) == 2:
-            startYear = rawDateData[0].split(".")[0].strip()
-            rawDateData[1] = f"{startYear}.{rawDateData[1]}"
-            log.info("NEW " + rawDateData[1])
         startDate: datetime.date = self.parseDateInfo(rawDateData[0])
+        if len(re.findall(r"\d+", rawDateData[1])) == 2:
+            rawDateData[1] = f"{startDate.year}.{rawDateData[1]}"
+            log.info("NEW " + rawDateData[1])
         endDate: datetime.date = self.parseDateInfo(rawDateData[1])
         log.info(f"startDate: {startDate}, endDate: {endDate}")
 
@@ -50,8 +48,9 @@ class SimpleManagementController:
             return -1
 
     def parseDateInfo(self, dateInfoData: str) -> datetime.date:
-        dateInfoList = dateInfoData.split(".")
-        dateInfoList = list(map(lambda x: x.strip(), dateInfoList))
+        dateInfoList = re.findall(r"\d+", dateInfoData)
+        if len(dateInfoList) != 3:
+            raise ValueError(f"Invalid date header format: {dateInfoData!r}")
         if len(dateInfoList[0]) == 2:
             dateInfoList[0] = "20" + dateInfoList[0]
         log.info(dateInfoList)
@@ -209,12 +208,9 @@ class SimpleManagementController:
         rawDateData = dateInfo[0].get_text(strip=True).split(" ~ ")
         if len(rawDateData) != 2:
             raise ToggleStateInspectionError("DOM_STRUCTURE_CHANGED")
-        endDateParts = [part.strip() for part in rawDateData[1].split(".") if part.strip()]
-        if len(endDateParts) == 2:
-            startYear = rawDateData[0].split(".")[0].strip()
-            rawDateData[1] = f"{startYear}.{rawDateData[1]}"
-
         startDate = self.parseDateInfo(rawDateData[0])
+        if len(re.findall(r"\d+", rawDateData[1])) == 2:
+            rawDateData[1] = f"{startDate.year}.{rawDateData[1]}"
         endDate = self.parseDateInfo(rawDateData[1])
         if endDate < startDate:
             raise ToggleStateInspectionError("DOM_STRUCTURE_CHANGED")
