@@ -87,15 +87,18 @@ class SyncNaverReservation(Resource):
         
         targetDatesStr = req.get("targetDatesStr")
         targetRoom = req["targetRoom"]
+        desiredState = req["desiredState"]
         
         try:
             # Use context manager for guaranteed cleanup
             with create_browser() as driver:
                 log.info(f"targetDatesStr: {targetDatesStr}, targetRoom: {targetRoom}")
-                successDates = syncManager.SyncNaver(driver, targetDatesStr, targetRoom)
+                syncResult = syncManager.SyncNaver(
+                    driver, targetDatesStr, targetRoom, desiredState
+                )
                 return {
                     "message": "Sync Naver Reservation",
-                    "successDates": successDates,
+                    **syncResult,
                     "data": req
                 }, 200
         except FDExhaustedError as e:

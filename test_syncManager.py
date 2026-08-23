@@ -211,10 +211,12 @@ class TestSyncNaver:
             "syncManager.simpleManagementController.SimpleManagementController",
             return_value=mock_controller,
         ):
-            result = SyncNaver(mock_driver, "2024-08-19", "Yeoyu")
+            mock_controller.readTargetToggleState.side_effect = [False, True]
+            result = SyncNaver(mock_driver, "2024-08-19", "Yeoyu", "available")
 
-        assert len(result) == 1
-        assert result[0] == "2024-08-19"
+        assert result["status"] == "SUCCESS"
+        assert result["successDates"] == ["2024-08-19"]
+        assert result["results"][0]["result"] == "SUCCESS"
         mock_driver.goTo.assert_called()
         mock_driver.login.assert_called_once()
 
@@ -237,14 +239,24 @@ class TestSyncNaver:
             "syncManager.simpleManagementController.SimpleManagementController",
             return_value=mock_controller,
         ):
+            mock_controller.readTargetToggleState.side_effect = [True, True, True]
             result = SyncNaver(
-                mock_driver, "2024-08-19,2024-08-20,2024-08-21", "Yeohang"
+                mock_driver,
+                "2024-08-19,2024-08-20,2024-08-21",
+                "Yeohang",
+                "available",
             )
 
-        assert len(result) == 3
-        assert result[0] == "2024-08-19"
-        assert result[1] == "2024-08-20"
-        assert result[2] == "2024-08-21"
+        assert result["status"] == "SUCCESS"
+        assert result["successDates"] == [
+            "2024-08-19", "2024-08-20", "2024-08-21"
+        ]
+        assert all(item["result"] == "ALREADY_APPLIED" for item in result["results"])
+        click_calls = [
+            call for call in mock_driver.executeScript.call_args_list
+            if call.args and call.args[0] == "arguments[0].click();"
+        ]
+        assert click_calls == []
         assert mock_controller.findTargetPage.call_count == 3
 
     @patch("syncManager.id", "test_id")
@@ -264,9 +276,13 @@ class TestSyncNaver:
             "syncManager.simpleManagementController.SimpleManagementController",
             return_value=mock_controller,
         ):
-            result = SyncNaver(mock_driver, "2024-08-19", "Yeoyu")
+            result = SyncNaver(
+                mock_driver, "2024-08-19", "Yeoyu", "externallyBlocked"
+            )
 
-        assert len(result) == 0
+        assert result["status"] == "FAILED"
+        assert result["results"][0]["result"] == "DEFERRED"
+        assert result["results"][0]["reason"] == "DATE_NOT_AVAILABLE_IN_NAVER_CALENDAR"
         mock_controller.findTargetBtn.assert_not_called()
 
     @patch("syncManager.id", "test_id")
@@ -283,19 +299,72 @@ class TestSyncNaver:
         mock_controller = MagicMock()
         mock_controller.findTargetPage.side_effect = [0, -1, 2]
         mock_controller.findTargetBtn.return_value = MagicMock()
+        mock_controller.readTargetToggleState.side_effect = [True, True]
 
         with patch(
             "syncManager.simpleManagementController.SimpleManagementController",
             return_value=mock_controller,
         ):
             result = SyncNaver(
-                mock_driver, "2024-08-19,2024-08-20,2024-08-21", "Yeoyu"
+                mock_driver,
+                "2024-08-19,2024-08-20,2024-08-21",
+                "Yeoyu",
+                "available",
             )
 
-        assert len(result) == 2
-        assert "2024-08-19" in result
-        assert "2024-08-21" in result
-        assert "2024-08-20" not in result
+        assert result["status"] == "PARTIAL_SUCCESS"
+        assert result["successDates"] == ["2024-08-19", "2024-08-21"]
+        assert [item["result"] for item in result["results"]] == [
+            "ALREADY_APPLIED", "DEFERRED", "ALREADY_APPLIED"
+        ]
+
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    def test_sync_naver_continues_after_click_failure(self, mock_real_sleep, mock_sleep):
+        mock_driver = MagicMock()
+        mock_driver.executeScript.side_effect = [RuntimeError("click failed")]
+        mock_controller = MagicMock()
+        mock_controller.findTargetPage.return_value = 0
+        mock_controller.readTargetToggleState.side_effect = [False, True]
+
+        with patch(
+            "syncManager.simpleManagementController.SimpleManagementController",
+            return_value=mock_controller,
+        ):
+            result = SyncNaver(
+                mock_driver,
+                "2024-08-19,2024-08-20",
+                "Yeoyu",
+                "available",
+            )
+
+        assert result["status"] == "PARTIAL_SUCCESS"
+        assert [item["result"] for item in result["results"]] == [
+            "FAILED", "ALREADY_APPLIED"
+        ]
+        assert result["results"][0]["reason"] == "CLICK_FAILED"
+
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    def test_sync_naver_requires_post_click_state_verification(
+        self, mock_real_sleep, mock_sleep
+    ):
+        mock_driver = MagicMock()
+        mock_controller = MagicMock()
+        mock_controller.findTargetPage.return_value = 0
+        mock_controller.readTargetToggleState.side_effect = [False, False]
+
+        with patch(
+            "syncManager.simpleManagementController.SimpleManagementController",
+            return_value=mock_controller,
+        ):
+            result = SyncNaver(
+                mock_driver, "2024-08-19", "Yeoyu", "available"
+            )
+
+        assert result["status"] == "FAILED"
+        assert result["successDates"] == []
+        assert result["results"][0]["reason"] == "STATE_VERIFICATION_FAILED"
 
 
 class TestGetNaverReservation:

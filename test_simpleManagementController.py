@@ -139,6 +139,45 @@ class TestFindTargetBtn:
         assert "dateIndex=0" in str(exc_info.value)
 
 
+class TestReadTargetToggleState:
+    def test_reads_live_checkbox_property_from_target_cell(self):
+        controller = SimpleManagementController()
+        driver = MagicMock()
+        table = MagicMock()
+        rows = [MagicMock(), MagicMock()]
+        cells = [MagicMock() for _ in range(7)]
+        checkbox = MagicMock()
+        checkbox.is_selected.return_value = False
+        driver.findByXpath.return_value = table
+
+        def find_children(element, selector):
+            if element is table:
+                return rows
+            if element is rows[1]:
+                return cells
+            if element is cells[3] and "input" in selector:
+                return [checkbox]
+            return []
+
+        driver.findChildElementsByXpath.side_effect = find_children
+
+        assert controller.readTargetToggleState(driver, 3, 1) is False
+
+    def test_rejects_missing_checkbox_instead_of_guessing_state(self):
+        controller = SimpleManagementController()
+        driver = MagicMock()
+        table = MagicMock()
+        row = MagicMock()
+        cell = MagicMock()
+        driver.findByXpath.return_value = table
+        driver.findChildElementsByXpath.side_effect = [[row], [cell], []]
+
+        with pytest.raises(ToggleStateInspectionError) as exc_info:
+            controller.readTargetToggleState(driver, 0, 0)
+
+        assert exc_info.value.code == "STATE_UNDETERMINED"
+
+
 class TestInspectToggleStates:
     def _build_driver(self, switch_states=(True, False), counts=("1/1", "0/1")):
         driver = MagicMock()

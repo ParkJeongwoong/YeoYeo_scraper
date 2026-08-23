@@ -47,9 +47,29 @@ def register_api_models(api: Api) -> ApiModels:
             required=True, description='방 타입 ("Yeoyu" 또는 "Yeohang")',
             enum=["Yeoyu", "Yeohang"],
         ),
+        "desiredState": fields.String(
+            required=True,
+            description="목표 외부 판매 상태",
+            enum=["available", "externallyBlocked"],
+        ),
+    })
+    sync_in_result = api.model("SyncInResult", {
+        "date": fields.String(description="대상 날짜"),
+        "result": fields.String(
+            description="날짜별 처리 결과",
+            enum=["SUCCESS", "ALREADY_APPLIED", "DEFERRED", "FAILED"],
+        ),
+        "reason": fields.String(description="실패 또는 지연 사유", allow_null=True),
+        "retryable": fields.Boolean(description="재시도 가능 여부"),
+        "durationMs": fields.Integer(description="처리 소요 시간(ms)"),
     })
     sync_in_success_response = api.model("SyncInSuccessResponse", {
         "message": fields.String(description="응답 메시지"),
+        "status": fields.String(
+            description="전체 처리 상태",
+            enum=["SUCCESS", "PARTIAL_SUCCESS", "FAILED"],
+        ),
+        "results": fields.List(fields.Nested(sync_in_result), description="날짜별 결과"),
         "successDates": fields.List(fields.String, description="성공한 날짜 리스트"),
         "data": fields.Raw(description="요청 데이터"),
     })

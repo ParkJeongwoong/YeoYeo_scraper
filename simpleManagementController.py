@@ -89,6 +89,35 @@ class SimpleManagementController:
             f"(roomIndex={targetRoomValue}, dateIndex={idxOfDate})"
         )
 
+    def readTargetToggleState(
+        self, driver, idxOfDate: int, targetRoomValue: int
+    ) -> bool:
+        """Return the target cell's live checkbox state without clicking it."""
+        reservationTable = driver.findByXpath(
+            '//div[contains(@class, "SimpleManagement__management-tbody")]'
+        )
+        roomList = driver.findChildElementsByXpath(
+            reservationTable,
+            './div[contains(@class, "SimpleManagement__management-row")]',
+        )
+        if targetRoomValue >= len(roomList):
+            raise ToggleStateInspectionError("TARGET_BUTTON_NOT_FOUND")
+
+        reservationList = driver.findChildElementsByXpath(
+            roomList[targetRoomValue],
+            './div[contains(@class, "SimpleManagement__content")]',
+        )
+        if idxOfDate >= len(reservationList):
+            raise ToggleStateInspectionError("TARGET_BUTTON_NOT_FOUND")
+
+        checkboxes = driver.findChildElementsByXpath(
+            reservationList[idxOfDate],
+            './/input[contains(concat(" ", normalize-space(@class), " "), " switch-input-check ")]',
+        )
+        if not checkboxes:
+            raise ToggleStateInspectionError("STATE_UNDETERMINED")
+        return bool(checkboxes[0].is_selected())
+
     def inspectToggleStates(self, driver, targetDate: datetime.date) -> list:
         """Read reservation counts and toggle properties without clicking controls."""
         idxOfDate = self.findTargetPage(driver, targetDate)
