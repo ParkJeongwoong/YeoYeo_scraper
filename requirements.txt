@@ -10,6 +10,3 @@ undetected-chromedriver==3.5.5
 # Utilities
 pyperclip==1.9.0
 python-dotenv==1.0.1
-
-# Testing
-pytest==8.0.0
