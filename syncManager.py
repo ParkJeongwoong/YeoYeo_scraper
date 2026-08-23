@@ -15,6 +15,7 @@ import bookingListExtractor
 import driver
 import log
 import simpleManagementController
+from reservation_utils import normalize_booking_lists, parse_target_date, parse_target_dates
 
 
 class RoomType(Enum):
@@ -445,15 +446,11 @@ def _isPageStateSuspicious(pageState: Optional[dict]) -> Tuple[bool, Optional[st
 
 
 def makeTargetDateList(dateListStr: str) -> list:
-    dateList = dateListStr.split(",")
-    dateList.sort()
-    targetDateList = list(map(lambda x: makeTargetDate(x), dateList))
-    return targetDateList
+    return parse_target_dates(dateListStr)
 
 
 def makeTargetDate(dateStr: str) -> datetime.date:
-    dateList = dateStr.split("-")
-    return datetime.date(int(dateList[0]), int(dateList[1]), int(dateList[2]))
+    return parse_target_date(dateStr)
 
 
 def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> list:
@@ -618,33 +615,9 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
                     sessionId,
                 ) from e
 
-    bookingList = list(
-        {booking["reservationNumber"]: booking for booking in bookingList}.values()
-    )
-    kst = datetime.timezone(datetime.timedelta(hours=9), "Asia/Seoul")
-    now = datetime.datetime.now(datetime.timezone.utc).astimezone(kst)
-    for booking in bookingList:
-        start = datetime.datetime.strptime(booking["startDate"], "%Y%m%d").replace(
-            tzinfo=kst
-        )
-        log.info(f"{start} {now} {start > now}")
-    bookingList = list(
-        filter(
-            lambda x: datetime.datetime.strptime(x["startDate"], "%Y%m%d").replace(
-                tzinfo=kst
-            )
-            > now,
-            bookingList,
-        )
-    )
+    notCanceledBookingList, bookingList = normalize_booking_lists(bookingList)
     log.info(f"취소 포함 총 예약 수 : {len(bookingList)}")
     log.info(bookingList)
-    notCanceledBookingList = list(
-        filter(
-            lambda x: str(x.get("status", "")).strip() not in {"취소"},
-            bookingList,
-        )
-    )
     log.info(f"취소 미포함 확정 예약 수 : {len(notCanceledBookingList)}")
     log.info(notCanceledBookingList)
     return notCanceledBookingList, bookingList
