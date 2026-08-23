@@ -27,12 +27,10 @@ class SimpleManagementController:
         dateInfo = soup.select('a[class^="DatePeriodCalendar__date-info"]')
         rawDateData = re.search(">(.*?)<", str(dateInfo)).group(1).split(" ~ ")
         log.info(rawDateData)
-        endDateParts = [part.strip() for part in rawDateData[1].split(".") if part.strip()]
-        if len(endDateParts) == 2:
-            startYear = rawDateData[0].split(".")[0].strip()
-            rawDateData[1] = f"{startYear}.{rawDateData[1]}"
-            log.info("NEW " + rawDateData[1])
         startDate: datetime.date = self.parseDateInfo(rawDateData[0])
+        if len(re.findall(r"\d+", rawDateData[1])) == 2:
+            rawDateData[1] = f"{startDate.year}.{rawDateData[1]}"
+            log.info("NEW " + rawDateData[1])
         endDate: datetime.date = self.parseDateInfo(rawDateData[1])
         log.info(f"startDate: {startDate}, endDate: {endDate}")
 
@@ -50,8 +48,9 @@ class SimpleManagementController:
             return -1
 
     def parseDateInfo(self, dateInfoData: str) -> datetime.date:
-        dateInfoList = dateInfoData.split(".")
-        dateInfoList = list(map(lambda x: x.strip(), dateInfoList))
+        dateInfoList = re.findall(r"\d+", dateInfoData)
+        if len(dateInfoList) != 3:
+            raise ValueError(f"Invalid date header format: {dateInfoData!r}")
         if len(dateInfoList[0]) == 2:
             dateInfoList[0] = "20" + dateInfoList[0]
         log.info(dateInfoList)
@@ -88,6 +87,35 @@ class SimpleManagementController:
             "Unable to locate reservation label in target cell "
             f"(roomIndex={targetRoomValue}, dateIndex={idxOfDate})"
         )
+
+    def readTargetToggleState(
+        self, driver, idxOfDate: int, targetRoomValue: int
+    ) -> bool:
+        """Return the target cell's live checkbox state without clicking it."""
+        reservationTable = driver.findByXpath(
+            '//div[contains(@class, "SimpleManagement__management-tbody")]'
+        )
+        roomList = driver.findChildElementsByXpath(
+            reservationTable,
+            './div[contains(@class, "SimpleManagement__management-row")]',
+        )
+        if targetRoomValue >= len(roomList):
+            raise ToggleStateInspectionError("TARGET_BUTTON_NOT_FOUND")
+
+        reservationList = driver.findChildElementsByXpath(
+            roomList[targetRoomValue],
+            './div[contains(@class, "SimpleManagement__content")]',
+        )
+        if idxOfDate >= len(reservationList):
+            raise ToggleStateInspectionError("TARGET_BUTTON_NOT_FOUND")
+
+        checkboxes = driver.findChildElementsByXpath(
+            reservationList[idxOfDate],
+            './/input[contains(concat(" ", normalize-space(@class), " "), " switch-input-check ")]',
+        )
+        if not checkboxes:
+            raise ToggleStateInspectionError("STATE_UNDETERMINED")
+        return bool(checkboxes[0].is_selected())
 
     def inspectToggleStates(self, driver, targetDate: datetime.date) -> list:
         """Read reservation counts and toggle properties without clicking controls."""
@@ -180,12 +208,9 @@ class SimpleManagementController:
         rawDateData = dateInfo[0].get_text(strip=True).split(" ~ ")
         if len(rawDateData) != 2:
             raise ToggleStateInspectionError("DOM_STRUCTURE_CHANGED")
-        endDateParts = [part.strip() for part in rawDateData[1].split(".") if part.strip()]
-        if len(endDateParts) == 2:
-            startYear = rawDateData[0].split(".")[0].strip()
-            rawDateData[1] = f"{startYear}.{rawDateData[1]}"
-
         startDate = self.parseDateInfo(rawDateData[0])
+        if len(re.findall(r"\d+", rawDateData[1])) == 2:
+            rawDateData[1] = f"{startDate.year}.{rawDateData[1]}"
         endDate = self.parseDateInfo(rawDateData[1])
         if endDate < startDate:
             raise ToggleStateInspectionError("DOM_STRUCTURE_CHANGED")

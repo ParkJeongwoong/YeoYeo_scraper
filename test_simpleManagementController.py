@@ -35,6 +35,11 @@ class TestParseDateInfo:
         result = controller.parseDateInfo(" 24 . 9 . 15 ")
         assert result == datetime.date(2024, 9, 15)
 
+    def test_parse_date_with_korean_weekday_suffix(self):
+        controller = SimpleManagementController()
+        result = controller.parseDateInfo("26. 8. 23. 일")
+        assert result == datetime.date(2026, 8, 23)
+
     def test_parse_date_different_year(self):
         controller = SimpleManagementController()
         result = controller.parseDateInfo("25. 3. 7")
@@ -42,6 +47,21 @@ class TestParseDateInfo:
 
 
 class TestDateCalculation:
+    def test_period_with_weekday_and_omitted_end_year(self):
+        controller = SimpleManagementController()
+        driver = MagicMock()
+        html = (
+            '<a class="DatePeriodCalendar__date-info">'
+            '26. 8. 23. 일 ~ 8. 29. 토</a>'
+        )
+
+        result = controller.findTargetPeriod(
+            datetime.date(2026, 8, 29), html, driver
+        )
+
+        assert result == 6
+        driver.executeScript.assert_not_called()
+
     def test_date_difference_same_month(self):
         targetDate = datetime.date(2024, 8, 22)
         startDate = datetime.date(2024, 8, 19)
@@ -137,6 +157,45 @@ class TestFindTargetBtn:
 
         assert "roomIndex=0" in str(exc_info.value)
         assert "dateIndex=0" in str(exc_info.value)
+
+
+class TestReadTargetToggleState:
+    def test_reads_live_checkbox_property_from_target_cell(self):
+        controller = SimpleManagementController()
+        driver = MagicMock()
+        table = MagicMock()
+        rows = [MagicMock(), MagicMock()]
+        cells = [MagicMock() for _ in range(7)]
+        checkbox = MagicMock()
+        checkbox.is_selected.return_value = False
+        driver.findByXpath.return_value = table
+
+        def find_children(element, selector):
+            if element is table:
+                return rows
+            if element is rows[1]:
+                return cells
+            if element is cells[3] and "input" in selector:
+                return [checkbox]
+            return []
+
+        driver.findChildElementsByXpath.side_effect = find_children
+
+        assert controller.readTargetToggleState(driver, 3, 1) is False
+
+    def test_rejects_missing_checkbox_instead_of_guessing_state(self):
+        controller = SimpleManagementController()
+        driver = MagicMock()
+        table = MagicMock()
+        row = MagicMock()
+        cell = MagicMock()
+        driver.findByXpath.return_value = table
+        driver.findChildElementsByXpath.side_effect = [[row], [cell], []]
+
+        with pytest.raises(ToggleStateInspectionError) as exc_info:
+            controller.readTargetToggleState(driver, 0, 0)
+
+        assert exc_info.value.code == "STATE_UNDETERMINED"
 
 
 class TestInspectToggleStates:

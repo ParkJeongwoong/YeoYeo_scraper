@@ -87,15 +87,26 @@ class SyncNaverReservation(Resource):
         
         targetDatesStr = req.get("targetDatesStr")
         targetRoom = req["targetRoom"]
+        desiredState = req.get("desiredState")
         
         try:
             # Use context manager for guaranteed cleanup
             with create_browser() as driver:
                 log.info(f"targetDatesStr: {targetDatesStr}, targetRoom: {targetRoom}")
-                successDates = syncManager.SyncNaver(driver, targetDatesStr, targetRoom)
+                if desiredState is None:
+                    # TODO(TW-25): Application 전환 확인 후 레거시 무조건 토글 경로 제거.
+                    log.info("Legacy /sync/in toggle path used: desiredState missing")
+                    successDates = syncManager.SyncNaver(
+                        driver, targetDatesStr, targetRoom
+                    )
+                    syncResult = {"successDates": successDates}
+                else:
+                    syncResult = syncManager.SyncNaverIdempotent(
+                        driver, targetDatesStr, targetRoom, desiredState
+                    )
                 return {
                     "message": "Sync Naver Reservation",
-                    "successDates": successDates,
+                    **syncResult,
                     "data": req
                 }, 200
         except FDExhaustedError as e:

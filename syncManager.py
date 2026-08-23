@@ -15,6 +15,7 @@ import bookingListExtractor
 import driver
 import log
 import simpleManagementController
+from selenium.common.exceptions import NoSuchElementException
 from reservation_utils import normalize_booking_lists, parse_target_date, parse_target_dates
 
 
@@ -453,9 +454,58 @@ def makeTargetDate(dateStr: str) -> datetime.date:
     return parse_target_date(dateStr)
 
 
-def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> list:
+def SyncNaver(
+    driver: driver.Driver, targetDateStr: str, targetRoom: str
+) -> list:
+    """Legacy unconditional toggle flow kept temporarily for API compatibility."""
+    # TODO(TW-25): Remove after every Application caller sends desiredState.
     targetRoomEnum = RoomType[targetRoom]
     successDates = []
+    reservationManager = simpleManagementController.SimpleManagementController()
+
+    targetPageLoaded = False
+    if not checkLoginSession(driver):
+        targetPageLoaded = performLogin(
+            driver, targetUrl=simpleReservationManagementUrl
+        )
+
+    log.info(
+        f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
+    )
+    if not targetPageLoaded:
+        driver.goTo(simpleReservationManagementUrl)
+    log.info("간단예약관리 페이지 이동")
+    randomSleep(driver)
+    randomRealSleep()
+
+    for targetDate in makeTargetDateList(targetDateStr):
+        log.info(f"{targetDate} 예약 변경 시작")
+        idxOfDate = reservationManager.findTargetPage(driver, targetDate)
+        if idxOfDate == -1:
+            log.info("해당 날짜가 존재하지 않습니다.")
+            log.info(f"{targetDate} 예약 변경 종료")
+            continue
+
+        targetBtn = reservationManager.findTargetBtn(
+            driver, idxOfDate, targetRoomEnum.value
+        )
+        driver.executeScript("arguments[0].click();", targetBtn)
+        randomSleep(driver)
+        successDates.append(str(targetDate))
+        log.info(f"{targetDate}, {targetRoomEnum.name}, 예약 변경 완료")
+
+    return successDates
+
+
+def SyncNaverIdempotent(
+    driver: driver.Driver,
+    targetDateStr: str,
+    targetRoom: str,
+    desiredState: str,
+) -> dict:
+    targetRoomEnum = RoomType[targetRoom]
+    desiredSwitchOn = desiredState == "available"
+    results = []
 
     reservationManager = simpleManagementController.SimpleManagementController()
     
@@ -478,23 +528,87 @@ def SyncNaver(driver: driver.Driver, targetDateStr: str, targetRoom: str) -> lis
 
     targetDateList = makeTargetDateList(targetDateStr)
     for targetDate in targetDateList:
+        startedAt = time.monotonic()
         log.info(f"{targetDate} 예약 변경 시작")
-        idxOfDate = reservationManager.findTargetPage(driver, targetDate)
-        if idxOfDate == -1:
-            log.info("해당 날짜가 존재하지 않습니다.")
-            log.info(f"{targetDate} 예약 변경 종료")
-            continue
+        result = {
+            "date": str(targetDate),
+            "result": "FAILED",
+            "reason": "UNEXPECTED_ERROR",
+            "retryable": True,
+        }
+        try:
+            idxOfDate = reservationManager.findTargetPage(driver, targetDate)
+            if idxOfDate == -1:
+                result.update(
+                    result="DEFERRED",
+                    reason="DATE_NOT_AVAILABLE_IN_NAVER_CALENDAR",
+                    retryable=True,
+                )
+            else:
+                switchOn = reservationManager.readTargetToggleState(
+                    driver, idxOfDate, targetRoomEnum.value
+                )
+                if switchOn == desiredSwitchOn:
+                    result.update(
+                        result="ALREADY_APPLIED", reason=None, retryable=False
+                    )
+                else:
+                    targetBtn = reservationManager.findTargetBtn(
+                        driver, idxOfDate, targetRoomEnum.value
+                    )
+                    try:
+                        driver.executeScript("arguments[0].click();", targetBtn)
+                    except Exception:
+                        result.update(
+                            result="FAILED", reason="CLICK_FAILED", retryable=True
+                        )
+                    else:
+                        randomSleep(driver)
+                        verifiedSwitchOn = reservationManager.readTargetToggleState(
+                            driver, idxOfDate, targetRoomEnum.value
+                        )
+                        if verifiedSwitchOn == desiredSwitchOn:
+                            result.update(
+                                result="SUCCESS", reason=None, retryable=False
+                            )
+                        else:
+                            result.update(
+                                result="FAILED",
+                                reason="STATE_VERIFICATION_FAILED",
+                                retryable=True,
+                            )
+        except simpleManagementController.ToggleStateInspectionError as e:
+            result.update(result="FAILED", reason=e.code, retryable=True)
+        except (IndexError, NoSuchElementException):
+            result.update(
+                result="FAILED", reason="TARGET_BUTTON_NOT_FOUND", retryable=True
+            )
+        except Exception as e:
+            log.error(
+                f"날짜별 네이버 동기화 실패: room={targetRoomEnum.name}, date={targetDate}",
+                e,
+            )
+        finally:
+            result["durationMs"] = round((time.monotonic() - startedAt) * 1000)
+            results.append(result)
+            log.info(
+                "Naver sync date result: "
+                f"room={targetRoomEnum.name}, date={targetDate}, "
+                f"result={result['result']}, reason={result['reason']}, "
+                f"durationMs={result['durationMs']}"
+            )
 
-        targetBtn = reservationManager.findTargetBtn(
-            driver, idxOfDate, targetRoomEnum.value
-        )
-        driver.executeScript("arguments[0].click();", targetBtn)
-
-        randomSleep(driver)
-        successDates.append(str(targetDate))
-        log.info(f"{targetDate}, {targetRoomEnum.name}, 예약 변경 완료")
-
-    return successDates
+    successfulResults = {"SUCCESS", "ALREADY_APPLIED"}
+    successDates = [
+        item["date"] for item in results if item["result"] in successfulResults
+    ]
+    if len(successDates) == len(results):
+        status = "SUCCESS"
+    elif successDates:
+        status = "PARTIAL_SUCCESS"
+    else:
+        status = "FAILED"
+    return {"status": status, "results": results, "successDates": successDates}
 
 
 def inspectReservationToggleState(driver: driver.Driver, targetDate: datetime.date) -> list:
