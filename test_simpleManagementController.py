@@ -1,6 +1,10 @@
 import pytest
 import datetime
-from simpleManagementController import SimpleManagementController, ToggleStateInspectionError
+from simpleManagementController import (
+    SimpleManagementController,
+    SimpleManagementPageUnavailableError,
+    ToggleStateInspectionError,
+)
 from unittest.mock import Mock, MagicMock
 from bs4 import BeautifulSoup as bs
 from selenium.common.exceptions import NoSuchElementException
@@ -47,6 +51,16 @@ class TestParseDateInfo:
 
 
 class TestDateCalculation:
+    def test_missing_date_header_reports_page_unavailable(self):
+        controller = SimpleManagementController()
+
+        with pytest.raises(SimpleManagementPageUnavailableError):
+            controller.findTargetPeriod(
+                datetime.date(2026, 9, 20),
+                '<html><body>NAVER 로그인</body></html>',
+                MagicMock(),
+            )
+
     def test_period_with_weekday_and_omitted_end_year(self):
         controller = SimpleManagementController()
         driver = MagicMock()

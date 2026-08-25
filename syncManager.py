@@ -93,9 +93,22 @@ def checkLoginSession(driverInstance: driver.Driver) -> bool:
         driverInstance.goTo(naverMainUrl)
         log.info("[Session Check] 네이버 메인 페이지 이동")
         
-        # 로그인 상태 확인: 로그인 버튼 존재 여부로 판단
-        loginBtnCount = _countSelector(driverInstance, 'a.MyView-module__link_login___HpHMW')
-        logoutBtnCount = _countSelector(driverInstance, 'a.MyView-module__link_logout___HLv1Y')
+        # Hashed CSS module names change frequently. Prefer stable login/logout
+        # destinations and retain the current selectors for compatibility.
+        loginBtnCount = sum(
+            _countSelector(driverInstance, selector)
+            for selector in (
+                'a[href*="nidlogin.login"]',
+                'a.MyView-module__link_login___HpHMW',
+            )
+        )
+        logoutBtnCount = sum(
+            _countSelector(driverInstance, selector)
+            for selector in (
+                'a[href*="nidlogin.logout"]',
+                'a.MyView-module__link_logout___HLv1Y',
+            )
+        )
         
         if logoutBtnCount > 0:
             log.info("[Session Check] ✓ 프로필 로그인 세션 유지됨 - 로그인 스킵")
@@ -104,14 +117,11 @@ def checkLoginSession(driverInstance: driver.Driver) -> bool:
             log.info("[Session Check] ✗ 로그인 세션 없음 - 로그인 필요")
             return False
         else:
-            # 다른 방법으로 확인: 페이지 소스에서 로그인 관련 텍스트 확인
-            pageSource = driverInstance.getPageSource()
-            if '로그아웃' in pageSource or 'logout' in pageSource.lower():
-                log.info("[Session Check] ✓ 프로필 로그인 세션 유지됨 (텍스트 확인) - 로그인 스킵")
-                return True
-            else:
-                log.info("[Session Check] ✗ 로그인 상태 불명확 - 로그인 진행")
-                return False
+            # Raw HTML can contain inactive JavaScript/template strings such as
+            # "logout" even for signed-out users. An ambiguous state must not
+            # skip authentication.
+            log.info("[Session Check] ✗ 로그인 상태 불명확 - 로그인 진행")
+            return False
     except Exception as e:
         log.error("[Session Check] 세션 확인 중 오류 발생", e)
         return False
@@ -126,6 +136,42 @@ def _isNaverFinalizeUrl(url: str) -> bool:
         parsedUrl.hostname == "nid.naver.com"
         and re.fullmatch(r"/signin/v\d+/finalize/?", parsedUrl.path) is not None
     )
+
+
+def _isNaverLoginUrl(url: str) -> bool:
+    if not isinstance(url, str) or not url:
+        return False
+
+    parsedUrl = urlparse(url)
+    return parsedUrl.hostname == "nid.naver.com" and parsedUrl.path.endswith(
+        "nidlogin.login"
+    )
+
+
+def openAuthenticatedTargetPage(
+    driverInstance: driver.Driver,
+    targetUrl: str,
+    sessionId: Optional[str] = None,
+) -> None:
+    """Open a Naver partner page and recover once from an expired session."""
+    # The partner session is authoritative. Checking the main-page widget first
+    # can trigger unnecessary logins when its dynamic controls are delayed or
+    # renamed, increasing CAPTCHA/IP-block risk.
+    driverInstance.goTo(targetUrl)
+    currentUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
+    if not _isNaverLoginUrl(currentUrl):
+        return
+
+    log.info(
+        f"[Session Recovery] Partner page redirected to login: targetUrl={targetUrl}"
+    )
+    performLogin(driverInstance, sessionId, targetUrl)
+    driverInstance.goTo(targetUrl)
+    recoveredUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
+    if _isNaverLoginUrl(recoveredUrl):
+        raise ReservationLookupError(
+            "naver session recovery did not reach the partner page", sessionId
+        )
 
 
 def _resumeFromNaverFinalize(
@@ -463,17 +509,11 @@ def SyncNaver(
     successDates = []
     reservationManager = simpleManagementController.SimpleManagementController()
 
-    targetPageLoaded = False
-    if not checkLoginSession(driver):
-        targetPageLoaded = performLogin(
-            driver, targetUrl=simpleReservationManagementUrl
-        )
+    openAuthenticatedTargetPage(driver, simpleReservationManagementUrl)
 
     log.info(
         f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
     )
-    if not targetPageLoaded:
-        driver.goTo(simpleReservationManagementUrl)
     log.info("간단예약관리 페이지 이동")
     randomSleep(driver)
     randomRealSleep()
@@ -510,18 +550,12 @@ def SyncNaverIdempotent(
     reservationManager = simpleManagementController.SimpleManagementController()
     
     # 세션 확인 후 로그인 스킵 또는 진행
-    targetPageLoaded = False
-    if not checkLoginSession(driver):
-        targetPageLoaded = performLogin(
-            driver, targetUrl=simpleReservationManagementUrl
-        )
+    openAuthenticatedTargetPage(driver, simpleReservationManagementUrl)
 
     log.info(
         f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
     )
 
-    if not targetPageLoaded:
-        driver.goTo(simpleReservationManagementUrl)
     log.info("간단예약관리 페이지 이동")
     randomSleep(driver)
     randomRealSleep()
@@ -613,14 +647,7 @@ def SyncNaverIdempotent(
 
 def inspectReservationToggleState(driver: driver.Driver, targetDate: datetime.date) -> list:
     """Inspect all supported rooms for one date without changing Naver state."""
-    targetPageLoaded = False
-    if not checkLoginSession(driver):
-        targetPageLoaded = performLogin(
-            driver, targetUrl=simpleReservationManagementUrl
-        )
-
-    if not targetPageLoaded:
-        driver.goTo(simpleReservationManagementUrl)
+    openAuthenticatedTargetPage(driver, simpleReservationManagementUrl)
     log.info("간단예약관리 판매 상태 조회 페이지 이동")
     randomSleep(driver)
     randomRealSleep()
@@ -632,18 +659,13 @@ def inspectReservationToggleState(driver: driver.Driver, targetDate: datetime.da
 def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
     sessionId = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     
-    # 세션 확인 후 로그인 스킵 또는 진행
-    targetPageLoaded = False
-    if not checkLoginSession(driver):
-        targetPageLoaded = performLogin(driver, sessionId, bookingListUrl)
+    openAuthenticatedTargetPage(driver, bookingListUrl, sessionId)
     
     log.info(
         f"Browser runtime info: {json.dumps(driver.getBrowserInfo(), ensure_ascii=False, default=str)}"
     )
     collectPageDiagnostics(driver, "after_login", sessionId)
 
-    if not targetPageLoaded:
-        driver.goTo(bookingListUrl)
     log.info("예약자관리 페이지 이동")
     randomSleep(driver)
     randomRealSleep()
