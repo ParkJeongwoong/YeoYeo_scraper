@@ -154,20 +154,13 @@ def openAuthenticatedTargetPage(
     sessionId: Optional[str] = None,
 ) -> None:
     """Open a Naver partner page and recover once from an expired session."""
-    loginAttempted = False
-    if not checkLoginSession(driverInstance):
-        performLogin(driverInstance, sessionId, targetUrl)
-        loginAttempted = True
-
+    # The partner session is authoritative. Checking the main-page widget first
+    # can trigger unnecessary logins when its dynamic controls are delayed or
+    # renamed, increasing CAPTCHA/IP-block risk.
     driverInstance.goTo(targetUrl)
     currentUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
     if not _isNaverLoginUrl(currentUrl):
         return
-
-    if loginAttempted:
-        raise ReservationLookupError(
-            "naver login did not reach the partner page", sessionId
-        )
 
     log.info(
         f"[Session Recovery] Partner page redirected to login: targetUrl={targetUrl}"

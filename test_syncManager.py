@@ -209,9 +209,8 @@ class TestLoginSession:
         assert checkLoginSession(mock_driver) is True
 
     @patch("syncManager.performLogin")
-    @patch("syncManager.checkLoginSession", return_value=True)
     def test_recovers_when_partner_page_redirects_to_login(
-        self, mock_check_session, mock_perform_login
+        self, mock_perform_login
     ):
         mock_driver = MagicMock()
         mock_driver.getCurrentUrl.side_effect = [
@@ -230,19 +229,35 @@ class TestLoginSession:
         assert mock_driver.goTo.call_count == 2
 
     @patch("syncManager.performLogin")
-    @patch("syncManager.checkLoginSession", return_value=False)
     def test_does_not_repeat_login_when_first_attempt_still_redirects(
-        self, mock_check_session, mock_perform_login
+        self, mock_perform_login
     ):
         mock_driver = MagicMock()
-        mock_driver.getCurrentUrl.return_value = (
-            "https://nid.naver.com/nidlogin.login?url=partner"
-        )
+        mock_driver.getCurrentUrl.side_effect = [
+            "https://nid.naver.com/nidlogin.login?url=partner",
+            "https://nid.naver.com/nidlogin.login?url=partner",
+        ]
 
         with pytest.raises(ReservationLookupError):
             openAuthenticatedTargetPage(mock_driver, "https://partner.example", "sid")
 
         mock_perform_login.assert_called_once()
+
+    @patch("syncManager.performLogin")
+    @patch("syncManager.checkLoginSession")
+    def test_reuses_partner_session_without_main_page_or_login(
+        self, mock_check_session, mock_perform_login
+    ):
+        mock_driver = MagicMock()
+        mock_driver.getCurrentUrl.return_value = (
+            "https://partner.booking.naver.com/bizes/899762/simple-management"
+        )
+
+        openAuthenticatedTargetPage(mock_driver, "https://partner.example", "sid")
+
+        mock_check_session.assert_not_called()
+        mock_perform_login.assert_not_called()
+        mock_driver.goTo.assert_called_once_with("https://partner.example")
 
 class TestSyncNaver:
     @patch("syncManager.randomSleep")
@@ -271,13 +286,21 @@ class TestSyncNaver:
     @patch("syncManager.pw", "test_pw")
     @patch("syncManager.randomSleep")
     @patch("syncManager.randomRealSleep")
-    @patch("syncManager.checkLoginSession", return_value=False)
     def test_sync_naver_single_date_yeoyu(
-        self, mock_check_session, mock_real_sleep, mock_sleep
+        self, mock_real_sleep, mock_sleep
     ):
         mock_driver = MagicMock()
         mock_driver.findBySelector.return_value.click = MagicMock()
         mock_driver.executeScript = MagicMock()
+        mock_driver.waitForAnySelector.return_value = {
+            "selector": "#loginBtn_row",
+            "count": 1,
+        }
+        mock_driver.getCurrentUrl.side_effect = [
+            "https://nid.naver.com/nidlogin.login?url=partner",
+            "https://www.naver.com/",
+            "https://partner.booking.naver.com/bizes/899762/simple-management",
+        ]
 
         mock_controller = MagicMock()
         mock_controller.findTargetPage.return_value = 0
