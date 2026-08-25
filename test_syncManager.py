@@ -10,7 +10,9 @@ from syncManager import (
     getNaverReservation,
     ReservationLookupError,
     RoomType,
+    checkLoginSession,
     _isNaverFinalizeUrl,
+    openAuthenticatedTargetPage,
     performLogin,
     waitForBookingListDom,
 )
@@ -190,6 +192,57 @@ class TestPerformLogin:
         mock_driver.findBySelector.assert_called_once_with("#log\\.login")
         mock_driver.findBySelector.return_value.click.assert_called_once_with()
 
+
+class TestLoginSession:
+    def test_does_not_trust_logout_text_without_a_visible_session_control(self):
+        mock_driver = MagicMock()
+        mock_driver.executeScript.return_value = 0
+        mock_driver.getPageSource.return_value = '<script>const action = "logout";</script>'
+
+        assert checkLoginSession(mock_driver) is False
+        mock_driver.getPageSource.assert_not_called()
+
+    def test_recognizes_stable_logout_destination(self):
+        mock_driver = MagicMock()
+        mock_driver.executeScript.side_effect = [0, 0, 1, 0]
+
+        assert checkLoginSession(mock_driver) is True
+
+    @patch("syncManager.performLogin")
+    @patch("syncManager.checkLoginSession", return_value=True)
+    def test_recovers_when_partner_page_redirects_to_login(
+        self, mock_check_session, mock_perform_login
+    ):
+        mock_driver = MagicMock()
+        mock_driver.getCurrentUrl.side_effect = [
+            "https://nid.naver.com/nidlogin.login?url=partner",
+            "https://partner.booking.naver.com/bizes/899762/simple-management",
+        ]
+        target_url = (
+            "https://partner.booking.naver.com/bizes/899762/simple-management"
+        )
+
+        openAuthenticatedTargetPage(mock_driver, target_url, "session-id")
+
+        mock_perform_login.assert_called_once_with(
+            mock_driver, "session-id", target_url
+        )
+        assert mock_driver.goTo.call_count == 2
+
+    @patch("syncManager.performLogin")
+    @patch("syncManager.checkLoginSession", return_value=False)
+    def test_does_not_repeat_login_when_first_attempt_still_redirects(
+        self, mock_check_session, mock_perform_login
+    ):
+        mock_driver = MagicMock()
+        mock_driver.getCurrentUrl.return_value = (
+            "https://nid.naver.com/nidlogin.login?url=partner"
+        )
+
+        with pytest.raises(ReservationLookupError):
+            openAuthenticatedTargetPage(mock_driver, "https://partner.example", "sid")
+
+        mock_perform_login.assert_called_once()
 
 class TestSyncNaver:
     @patch("syncManager.randomSleep")

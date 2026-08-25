@@ -7,6 +7,10 @@ from time import sleep
 import log
 
 
+class SimpleManagementPageUnavailableError(RuntimeError):
+    pass
+
+
 class SimpleManagementController:
     ROOM_NAMES = ("Yeoyu", "Yeohang")
 
@@ -24,8 +28,16 @@ class SimpleManagementController:
 
     def findTargetPeriod(self, targetDate: datetime.date, html: str, driver) -> int:
         soup = bs(html, "html.parser")
-        dateInfo = soup.select('a[class^="DatePeriodCalendar__date-info"]')
-        rawDateData = re.search(">(.*?)<", str(dateInfo)).group(1).split(" ~ ")
+        dateInfo = soup.select_one('a[class^="DatePeriodCalendar__date-info"]')
+        if dateInfo is None:
+            raise SimpleManagementPageUnavailableError(
+                "Naver simple-management date header is missing"
+            )
+        rawDateData = dateInfo.get_text(strip=True).split(" ~ ")
+        if len(rawDateData) != 2:
+            raise SimpleManagementPageUnavailableError(
+                f"Unexpected Naver date header: {dateInfo.get_text(strip=True)!r}"
+            )
         log.info(rawDateData)
         startDate: datetime.date = self.parseDateInfo(rawDateData[0])
         if len(re.findall(r"\d+", rawDateData[1])) == 2:
