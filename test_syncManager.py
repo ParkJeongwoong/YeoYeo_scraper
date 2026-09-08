@@ -44,6 +44,49 @@ class TestMakeTargetDate:
         assert result == datetime.date(2024, 12, 31)
 
 
+class TestAuthenticationProtection:
+    @patch("syncManager.collectPageDiagnostics")
+    @patch("syncManager._resumeFromNaverFinalize")
+    def test_protection_does_not_enter_finalize_recovery(self, resume, diagnostics):
+        browser = MagicMock()
+        browser.executeScript.return_value = "CAPTCHA"
+        browser.getCurrentUrl.return_value = "https://nid.naver.com/signin/v4/finalize"
+        with pytest.raises(ReservationLookupError, match="CAPTCHA"):
+            performLogin(browser, "test-session")
+        browser.login.assert_not_called()
+        resume.assert_not_called()
+        diagnostics.assert_not_called()
+
+    def test_unknown_destination_is_not_logged_as_reused(self, caplog):
+        import logging
+        browser = MagicMock()
+        browser.executeScript.return_value = None
+        browser.getCurrentUrl.return_value = "https://nid.naver.com/new-challenge"
+        with caplog.at_level(logging.INFO):
+            openAuthenticatedTargetPage(browser, "https://partner.example", "test-session")
+        assert '"status": "SESSION_UNCONFIRMED"' in caplog.text
+        assert '"status": "SESSION_REUSED"' not in caplog.text
+
+    @pytest.mark.parametrize("status", ["CAPTCHA", "ACCESS_BLOCKED", "ADDITIONAL_AUTH"])
+    def test_protection_stops_before_login(self, status, caplog):
+        import logging
+        browser = MagicMock()
+        browser.executeScript.return_value = status
+        with caplog.at_level(logging.INFO), pytest.raises(ReservationLookupError):
+            openAuthenticatedTargetPage(browser, "https://partner.example", "test-session")
+        browser.login.assert_not_called()
+        assert f'"status": "{status}"' in caplog.text
+
+    def test_normal_page_does_not_log_credentials(self, caplog):
+        import logging
+        browser = MagicMock()
+        browser.executeScript.return_value = None
+        browser.getCurrentUrl.return_value = "https://partner.example"
+        with caplog.at_level(logging.INFO):
+            openAuthenticatedTargetPage(browser, "https://partner.example", "test-session")
+        assert '"status": "SESSION_REUSED"' in caplog.text
+        browser.login.assert_not_called()
+
 class TestMakeTargetDateList:
     def test_single_date(self):
         result = makeTargetDateList("2024-08-19")
@@ -278,9 +321,7 @@ class TestSyncNaver:
             result = SyncNaver(mock_driver, "2024-08-19", "Yeoyu")
 
         assert result == ["2024-08-19"]
-        mock_driver.executeScript.assert_any_call(
-            "arguments[0].click();", target_button
-        )
+        target_button.click.assert_called_once_with()
 
     @patch("syncManager.id", "test_id")
     @patch("syncManager.pw", "test_pw")
@@ -423,8 +464,8 @@ class TestSyncNaver:
     @patch("syncManager.randomRealSleep")
     def test_sync_naver_continues_after_click_failure(self, mock_real_sleep, mock_sleep):
         mock_driver = MagicMock()
-        mock_driver.executeScript.side_effect = [RuntimeError("click failed")]
         mock_controller = MagicMock()
+        mock_controller.findTargetBtn.return_value.click.side_effect = RuntimeError("click failed")
         mock_controller.findTargetPage.return_value = 0
         mock_controller.readTargetToggleState.side_effect = [False, True]
 

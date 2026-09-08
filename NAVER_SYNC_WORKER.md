@@ -7,11 +7,24 @@ Required environment variables:
 - `APPLICATION_SERVER_URL`: Application API origin, for example `https://api.example.com`
 - `APPLICATION_SYNC_ACCESS_KEY`: must match the Application server's `scraping.accessKey`
 - `NAVER_SYNC_LOCK_FILE`: optional; defaults to `/tmp/yeoyeo_naver_sync.lock`
+- `CHROME_BINARY_PATH`: executable Chrome path. HomeServer uses
+  `/home/dvlprjw/.local/bin/yeoyeo-google-chrome`.
+- `CHROME_PROFILE_PATH`: persistent Chrome profile directory. It must remain
+  stable between cron executions.
+
+Verify the configured browser without opening Naver:
+
+```bash
+"$CHROME_BINARY_PATH" --version
+```
+
+The current HomeServer wrapper launches Google Chrome 146.0.7680.164 from
+`/home/dvlprjw/.local/google-chrome-146` with its user-local shared libraries.
 
 Example cron entry (KST host):
 
 ```cron
-11 * * * * cd /home/ubuntu/app/scraping && ./venv/bin/python naver_sync_worker.py >> logs/naver-sync-worker.log 2>&1
+11 * * * * cd /home/dvlprjw/src/YeoYeo_scraper && ./venv/bin/python naver_sync_worker.py >> logs/naver-sync-worker.log 2>&1
 ```
 
 Use logrotate for `logs/naver-sync-worker.log`. Each event is JSON and contains a `runId`, direction, stage, and independent status. Reservation PII is intentionally excluded.

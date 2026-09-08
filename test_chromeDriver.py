@@ -15,6 +15,24 @@ from chromeDriver import (
 
 
 class TestChromeDriverClose:
+    def test_flushes_profile_before_uc_quit(self):
+        browser = MagicMock()
+        instance = self._make_instance(driver=browser)
+        with patch("chromeDriver._is_pid_alive", return_value=False), patch.object(
+            instance, "_verify_and_force_terminate_processes", return_value=True
+        ):
+            instance.close()
+        assert browser.mock_calls.index(call.execute_cdp_cmd("Browser.close", {})) < browser.mock_calls.index(call.quit())
+
+    def test_graceful_close_failure_still_runs_existing_cleanup(self):
+        browser = MagicMock()
+        browser.execute_cdp_cmd.side_effect = RuntimeError("disconnected")
+        instance = self._make_instance(driver=browser)
+        with patch.object(instance, "_verify_and_force_terminate_processes", return_value=True):
+            instance.close()
+        browser.quit.assert_called_once_with()
+        assert instance._closed
+
     def _make_instance(self, driver=None, debug_mode=False):
         instance = ChromeDriver.__new__(ChromeDriver)
         instance.debug_mode = debug_mode
@@ -462,14 +480,100 @@ class TestChromeDriverOptions:
         instance.active_chrome_profile_path = None
         return instance
 
-    def test_build_options_uses_stable_startup_language_without_prefs(self):
+    def test_build_options_uses_native_language_preferences(self):
         instance = self._make_instance()
 
         options = instance._buildOptions(include_profile=False)
 
         assert ChromeDriver.STARTUP_LANGUAGE == "ko-KR"
         assert "--lang=ko-KR" in options.arguments
-        assert "prefs" not in options.experimental_options
+        assert options.experimental_options["prefs"]["intl.accept_languages"] == ChromeDriver.ACCEPT_LANGUAGES
+
+    def test_chrome_selects_its_renderer(self):
+        options = self._make_instance()._buildOptions(include_profile=False)
+        assert "--disable-gpu" not in options.arguments
+
+    def test_build_options_uses_resolved_chrome_binary(self):
+        instance = self._make_instance()
+        instance.chrome_binary_path = "/opt/google/chrome/google-chrome"
+        options = instance._buildOptions(include_profile=False)
+        assert options.binary_location == "/opt/google/chrome/google-chrome"
+
+    def test_configured_chrome_binary_must_be_executable(self, tmp_path, monkeypatch):
+        binary = tmp_path / "chrome"
+        binary.write_text("not executable")
+        monkeypatch.setenv("CHROME_BINARY_PATH", str(binary))
+        instance = ChromeDriver.__new__(ChromeDriver)
+        with pytest.raises(BrowserStartupError, match="not executable"):
+            instance._resolve_chrome_binary_path()
+
+    def test_headless_ua_uses_desktop_token_with_real_ua_ch_metadata(self):
+        instance = self._make_instance()
+        browser = MagicMock()
+        browser.execute_script.return_value = (
+            "Mozilla/5.0 HeadlessChrome/146.0.0.0 Safari/537.36"
+        )
+        browser.execute_async_script.return_value = {
+            "brands": [{"brand": "Chromium", "version": "146"}],
+            "mobile": False,
+            "platform": "Linux",
+            "uaFullVersion": "146.0.7680.165",
+            "unsupported": "discarded",
+        }
+
+        instance._applyLanguageOverrides(browser)
+
+        assert browser.execute_cdp_cmd.call_args_list[0] == call(
+            "Network.setUserAgentOverride",
+            {
+                "userAgent": "Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36",
+                "userAgentMetadata": {
+                    "brands": [{"brand": "Chromium", "version": "146"}],
+                    "mobile": False,
+                    "platform": "Linux",
+                    "fullVersion": "146.0.7680.165",
+                },
+            },
+        )
+        assert browser.execute_cdp_cmd.call_args_list[1] == call(
+            "Emulation.setLocaleOverride", {"locale": "ko_KR"}
+        )
+
+    def test_headless_ua_is_not_changed_without_ua_ch_metadata(self):
+        instance = self._make_instance()
+        browser = MagicMock()
+        browser.execute_script.return_value = "HeadlessChrome/146.0.0.0"
+        browser.execute_async_script.return_value = None
+
+        instance._applyLanguageOverrides(browser)
+
+        browser.execute_cdp_cmd.assert_called_once_with(
+            "Emulation.setLocaleOverride", {"locale": "ko_KR"}
+        )
+
+
+class TestChromeDriverInput:
+    def test_login_types_into_live_fields_without_script_injection(self):
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance._closed = True
+        instance.driver = MagicMock()
+        username, password = MagicMock(), MagicMock()
+        with patch("chromeDriver.WebDriverWait") as wait:
+            wait.return_value.until.side_effect = [username, username, password]
+            instance.login("test-user", "test-password")
+        for field, value in ((username, "test-user"), (password, "test-password")):
+            field.click.assert_called_once_with()
+            assert field.send_keys.call_args_list[-1] == call(value)
+        instance.driver.execute_script.assert_not_called()
+
+    def test_navigation_waits_for_document_state(self):
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance._closed = True
+        instance.driver = MagicMock()
+        with patch.object(instance, "waitForDocumentReady") as ready, patch.object(instance, "wait") as sleep:
+            instance.goTo("https://example.test")
+        ready.assert_called_once_with()
+        sleep.assert_not_called()
 
 
 class TestChromeDriverProfiles:

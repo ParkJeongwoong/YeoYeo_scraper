@@ -799,6 +799,7 @@ class ChromeDriver(driver.Driver):
         
         self.debug_mode = self._get_bool_env("DEBUG_MODE")
         self.chrome_profile_path = os.getenv("CHROME_PROFILE_PATH")
+        self.chrome_binary_path = self._resolve_chrome_binary_path()
         self.use_subprocess = self._get_bool_env("UC_USE_SUBPROCESS", default=False)
         self.has_display_server = self._has_display_server()
         self.run_headless = self._should_run_headless()
@@ -1002,6 +1003,24 @@ class ChromeDriver(driver.Driver):
         logger.info("UC_USER_MULTI_PROCS explicitly set: enabled=%s", enabled)
         return enabled
 
+    def _resolve_chrome_binary_path(self):
+        configured_path = os.getenv("CHROME_BINARY_PATH")
+        if configured_path:
+            binary_path = os.path.realpath(os.path.expanduser(configured_path))
+            if not os.path.isfile(binary_path) or not os.access(binary_path, os.X_OK):
+                raise BrowserStartupError(
+                    f"Configured Chrome binary is not executable: {binary_path}"
+                )
+            return binary_path
+
+        for executable in (
+            "google-chrome-stable", "google-chrome", "chromium", "chromium-browser"
+        ):
+            binary_path = shutil.which(executable)
+            if binary_path:
+                return os.path.realpath(binary_path)
+        return None
+
     def getOptions(self) -> uc.ChromeOptions:
         return self._buildOptions(include_profile=True)
 
@@ -1009,18 +1028,26 @@ class ChromeDriver(driver.Driver):
         options = uc.ChromeOptions()
         profile_path = self._resolve_profile_path(include_profile)
 
+        chrome_binary_path = getattr(self, "chrome_binary_path", None)
+        if chrome_binary_path:
+            options.binary_location = chrome_binary_path
+
         # headless 옵션 설정 (디버그 모드에서는 비활성화)
         if self.run_headless:
             options.add_argument("--headless=new")
+            # Match the virtual display to the requested window (Chrome 146).
+            options.add_argument("--screen-info={1920x1080}")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
 
         # 브라우저 윈도우 사이즈
         options.add_argument("--window-size=1920,1080")
 
-        # 사람처럼 보이게 하는 옵션들
-        options.add_argument("--disable-gpu")
+        # Let Chrome select the available hardware/software renderer.
         options.add_argument(f"--lang={self.STARTUP_LANGUAGE}")
+        options.add_experimental_option("prefs", {
+            "intl.accept_languages": self.ACCEPT_LANGUAGES,
+        })
 
         # 불필요한 에러메시지 노출 방지
         options.add_argument("--log-level=3")
@@ -1104,12 +1131,13 @@ class ChromeDriver(driver.Driver):
 
     def getDriver(self, options) -> uc.Chrome:
         logger.info(
-            "Starting Chrome driver with debugMode=%s headless=%s useSubprocess=%s userMultiProcs=%s hasDisplayServer=%s profile=%s activeProfile=%s",
+            "Starting Chrome driver with debugMode=%s headless=%s useSubprocess=%s userMultiProcs=%s hasDisplayServer=%s binary=%s profile=%s activeProfile=%s",
             self.debug_mode,
             self.run_headless,
             self.use_subprocess,
             self.user_multi_procs,
             self.has_display_server,
+            getattr(self, "chrome_binary_path", None),
             self.chrome_profile_path,
             self.active_chrome_profile_path,
         )
@@ -1206,11 +1234,8 @@ class ChromeDriver(driver.Driver):
                 "Browser started but session health check failed (InvalidSessionIdException or DevTools disconnected)"
             )
         
-        # Step 6: Apply language overrides (non-fatal)
-        # CDP calls (Network.enable / Emulation.setLocaleOverride / addScriptToEvaluateOnNewDocument)
-        # can fail intermittently on fresh uc.Chrome sessions. Language override is a
-        # nice-to-have for Accept-Language / navigator.language - the browser itself is
-        # still fully usable without it, so we must NOT kill a healthy browser here.
+        # Step 6: Keep the headless UA consistent with the same desktop build and
+        # apply locale settings. These CDP calls are non-fatal on a healthy browser.
         try:
             self._applyLanguageOverrides(browser)
             logger.debug("Language overrides applied successfully")
@@ -1383,6 +1408,7 @@ class ChromeDriver(driver.Driver):
             "userMultiProcs": getattr(self, "user_multi_procs", False),
             "hasDisplayServer": self.has_display_server,
             "configuredChromeProfilePath": self.chrome_profile_path,
+            "chromeBinaryPath": getattr(self, "chrome_binary_path", None),
             "chromeProfilePath": self.active_chrome_profile_path,
             "servicePath": service_path,
             "servicePort": service_port,
@@ -1391,35 +1417,47 @@ class ChromeDriver(driver.Driver):
         }
 
     def _applyLanguageOverrides(self, browser):
-        language = self.BROWSER_LANGUAGE
-        cdpLocale = self.CDP_LOCALE
-        languages = self.ACCEPT_LANGUAGES.split(",")
-        userAgent = browser.execute_script("return navigator.userAgent;")
-        platform_name = browser.execute_script("return navigator.platform;")
+        user_agent = browser.execute_script("return navigator.userAgent;")
+        if "HeadlessChrome/" in user_agent:
+            metadata = browser.execute_async_script("""
+const done = arguments[arguments.length - 1];
+const data = navigator.userAgentData;
+if (!data) { done(null); return; }
+data.getHighEntropyValues([
+  'architecture', 'bitness', 'formFactors', 'fullVersionList', 'model',
+  'platform', 'platformVersion', 'uaFullVersion', 'wow64'
+]).then(done).catch(() => done(null));
+""")
+            if metadata:
+                # CDP calls this value fullVersion while the browser API returns
+                # uaFullVersion. Preserve every other value from the real build.
+                if "uaFullVersion" in metadata:
+                    metadata["fullVersion"] = metadata.pop("uaFullVersion")
+                allowed_keys = {
+                    "brands", "fullVersionList", "fullVersion", "platform",
+                    "platformVersion", "architecture", "model", "mobile",
+                    "bitness", "wow64", "formFactors",
+                }
+                metadata = {
+                    key: value for key, value in metadata.items()
+                    if key in allowed_keys
+                }
+                browser.execute_cdp_cmd(
+                    "Network.setUserAgentOverride",
+                    {
+                        "userAgent": user_agent.replace(
+                            "HeadlessChrome/", "Chrome/", 1
+                        ),
+                        "userAgentMetadata": metadata,
+                    },
+                )
+            else:
+                logger.warning(
+                    "Headless UA was not changed because UA-CH metadata is unavailable"
+                )
 
-        browser.execute_cdp_cmd("Network.enable", {})
-        browser.execute_cdp_cmd(
-            "Network.setUserAgentOverride",
-            {
-                "userAgent": userAgent,
-                "acceptLanguage": self.ACCEPT_LANGUAGES,
-                "platform": platform_name,
-            },
-        )
-        browser.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": cdpLocale})
-        browser.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {
-                "source": f"""
-Object.defineProperty(navigator, 'language', {{
-    get: () => '{language}'
-}});
-Object.defineProperty(navigator, 'languages', {{
-    get: () => {languages}
-}});
-""".strip()
-            },
-        )
+        # Native profile preferences set Accept-Language and navigator.languages.
+        browser.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": self.CDP_LOCALE})
 
     def close(self):
         if getattr(self, "_closed", False):
@@ -1444,6 +1482,16 @@ Object.defineProperty(navigator, 'languages', {{
         metadata = getattr(self, "_cleanup_metadata", None) or {}
         browser_pid = _normalize_pid(metadata.get("browserPid"))
         service_pid = _normalize_pid(metadata.get("servicePid"))
+
+        # uc.quit() sends SIGTERM, which can lose recently issued cookies.
+        # Let Chrome flush its profile first while still holding the profile lock.
+        try:
+            browser.execute_cdp_cmd("Browser.close", {})
+            deadline = time.monotonic() + 5
+            while browser_pid and _is_pid_alive(browser_pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+        except Exception:
+            logger.warning("Graceful browser close unavailable; using existing cleanup")
         
         quit_succeeded = False
         try:
@@ -1745,7 +1793,7 @@ Object.defineProperty(navigator, 'languages', {{
 
     def goTo(self, url):
         self.driver.get(url)
-        self.wait(3)  # 페이지가 완전히 로딩되도록 3초동안 기다림
+        self.waitForDocumentReady()
 
     def findBySelector(self, value):
         return self.driver.find_element(By.CSS_SELECTOR, value)
@@ -1768,17 +1816,15 @@ Object.defineProperty(navigator, 'languages', {{
             EC.presence_of_element_located((By.ID, "id"))
         )
 
-        # Use arguments[0] to safely pass values and avoid JavaScript injection
-        self.driver.execute_script(
-            "document.querySelector('input[id=\"id\"]').setAttribute('value', arguments[0])",
-            id
-        )
-        self.wait(1)
-        self.driver.execute_script(
-            "document.querySelector('input[id=\"pw\"]').setAttribute('value', arguments[0])",
-            pw
-        )
-        self.wait(1)
+        # WebDriver input updates the live value and dispatches input events,
+        # allowing page listeners to keep their state in sync with the DOM.
+        for field_id, value in (("id", id), ("pw", pw)):
+            field = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.ID, field_id))
+            )
+            field.click()
+            field.send_keys(Keys.CONTROL, "a")
+            field.send_keys(value)
 
         # 로그인 상태 유지 체크박스 클릭
         try:
@@ -1872,6 +1918,11 @@ Object.defineProperty(navigator, 'languages', {{
             "intlLocale": self.executeScript(
                 "return Intl.DateTimeFormat().resolvedOptions().locale;"
             ),
+            "userAgent": self.executeScript("return navigator.userAgent;"),
+            "userAgentData": self.executeScript(
+                "return navigator.userAgentData ? navigator.userAgentData.toJSON() : null;"
+            ),
+            "webdriver": self.executeScript("return navigator.webdriver;"),
         }
 
     def executeScript(self, script, *args):
