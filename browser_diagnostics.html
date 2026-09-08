@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Chrome 환경 진단 (TW-28)</title>
+<h1>Chrome 환경 진단</h1>
+<p>일반 Chrome과 Scraper에서 이 파일을 열어 결과를 비교하세요. 네트워크 전송, 쿠키 및 저장소 조회는 하지 않습니다.</p>
+<pre id="result">수집 중</pre>
+<script>
+(async () => {
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl');
+  const debug = gl && gl.getExtension('WEBGL_debug_renderer_info');
+  const permissions = {};
+  for (const name of ['notifications', 'camera', 'microphone']) {
+    try { permissions[name] = (await navigator.permissions.query({name})).state; }
+    catch (_) { permissions[name] = 'unsupported'; }
+  }
+  const result = {
+    userAgent: navigator.userAgent,
+    userAgentData: navigator.userAgentData ? navigator.userAgentData.toJSON() : null,
+    webdriver: navigator.webdriver,
+    platform: navigator.platform,
+    language: navigator.language,
+    languages: navigator.languages,
+    intl: Intl.DateTimeFormat().resolvedOptions(),
+    screen: {width: screen.width, height: screen.height,
+      availWidth: screen.availWidth, availHeight: screen.availHeight,
+      colorDepth: screen.colorDepth},
+    viewport: {width: innerWidth, height: innerHeight, pixelRatio: devicePixelRatio},
+    webgl: debug ? {vendor: gl.getParameter(debug.UNMASKED_VENDOR_WEBGL),
+      renderer: gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)} : null,
+    plugins: Array.from(navigator.plugins, p => p.name),
+    maxTouchPoints: navigator.maxTouchPoints,
+    permissions
+  };
+  window.browserDiagnostics = result;
+  document.getElementById('result').textContent = JSON.stringify(result, null, 2);
+})();
+</script>
+</html>

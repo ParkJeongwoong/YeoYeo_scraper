@@ -56,7 +56,7 @@ class SimpleManagementController:
             btn = driver.findByXpath(
                 '//button[contains(@class, "DatePeriodCalendar__next")]'
             )
-            driver.executeScript("arguments[0].click();", btn)
+            btn.click()
             return -1
 
     def parseDateInfo(self, dateInfoData: str) -> datetime.date:

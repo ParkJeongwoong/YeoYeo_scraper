@@ -158,8 +158,13 @@ def openAuthenticatedTargetPage(
     # can trigger unnecessary logins when its dynamic controls are delayed or
     # renamed, increasing CAPTCHA/IP-block risk.
     driverInstance.goTo(targetUrl)
+    _checkAuthenticationProtection(driverInstance, sessionId)
     currentUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
     if not _isNaverLoginUrl(currentUrl):
+        if _isTargetUrl(currentUrl, targetUrl):
+            _authenticationEvent("SESSION_REUSED", sessionId)
+        else:
+            _authenticationEvent("SESSION_UNCONFIRMED", sessionId)
         return
 
     log.info(
@@ -168,10 +173,44 @@ def openAuthenticatedTargetPage(
     performLogin(driverInstance, sessionId, targetUrl)
     driverInstance.goTo(targetUrl)
     recoveredUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
-    if _isNaverLoginUrl(recoveredUrl):
+    _checkAuthenticationProtection(driverInstance, sessionId)
+    if not _isTargetUrl(recoveredUrl, targetUrl):
+        _authenticationEvent("SESSION_RECOVERY_FAILED", sessionId)
         raise ReservationLookupError(
             "naver session recovery did not reach the partner page", sessionId
         )
+    _authenticationEvent("SESSION_RECOVERED", sessionId)
+
+
+def _isTargetUrl(currentUrl, targetUrl):
+    if not isinstance(currentUrl, str) or not currentUrl:
+        return False
+    current, target = urlparse(currentUrl), urlparse(targetUrl)
+    return (current.scheme, current.netloc, current.path.rstrip("/")) == (
+        target.scheme, target.netloc, target.path.rstrip("/"))
+
+
+def _authenticationEvent(status, sessionId):
+    # Only categorical outcomes; never credentials, page text, or query strings.
+    log.info(json.dumps({"event": "NAVER_AUTH", "status": status,
+                         "sessionId": sessionId}, ensure_ascii=False))
+
+
+def _checkAuthenticationProtection(driverInstance, sessionId):
+    status = driverInstance.executeScript("""
+const visible = selector => Array.from(document.querySelectorAll(selector))
+    .some(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+if (visible('#captcha, #captchaimg, input[name="captcha"]')) return 'CAPTCHA';
+if (location.hostname === 'nid.naver.com') {
+    const text = document.body ? document.body.innerText : '';
+    if (text.includes('접근이 제한') || text.includes('비정상적인 접근')) return 'ACCESS_BLOCKED';
+    if (text.includes('2단계 인증을 진행') || text.includes('본인 확인이 필요')) return 'ADDITIONAL_AUTH';
+}
+return null;
+""")
+    if status in ("CAPTCHA", "ACCESS_BLOCKED", "ADDITIONAL_AUTH"):
+        _authenticationEvent(status, sessionId)
+        raise ReservationLookupError(status, sessionId)
 
 
 def _resumeFromNaverFinalize(
@@ -220,6 +259,8 @@ def performLogin(
 
     try:
         driverInstance.goTo(naverLoginUrl)
+        _checkAuthenticationProtection(driverInstance, sessionId)
+        _authenticationEvent("LOGIN_ATTEMPT", sessionId)
         log.info("네이버 로그인 페이지 이동")
         driverInstance.login(id, pw)
         matchedLoginButton = driverInstance.waitForAnySelector(
@@ -228,9 +269,14 @@ def performLogin(
         loginButtonSelector = matchedLoginButton["selector"]
         log.info(f"[Login] Login button detected: selector={loginButtonSelector}")
         driverInstance.findBySelector(loginButtonSelector).click()
-        log.info("로그인 성공")
+        _authenticationEvent("LOGIN_SUBMITTED", sessionId)
         randomSleep(driverInstance)
         randomRealSleep()
+        _checkAuthenticationProtection(driverInstance, sessionId)
+    except ReservationLookupError:
+        # Protection must terminate immediately, including on finalize URLs.
+        # Do not recover/navigate or capture a credential-bearing login page.
+        raise
     except Exception as e:
         currentUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
         log.error(f"Naver login error: currentUrl={currentUrl}", e)
@@ -529,7 +575,7 @@ def SyncNaver(
         targetBtn = reservationManager.findTargetBtn(
             driver, idxOfDate, targetRoomEnum.value
         )
-        driver.executeScript("arguments[0].click();", targetBtn)
+        targetBtn.click()
         randomSleep(driver)
         successDates.append(str(targetDate))
         log.info(f"{targetDate}, {targetRoomEnum.name}, 예약 변경 완료")
@@ -591,7 +637,7 @@ def SyncNaverIdempotent(
                         driver, idxOfDate, targetRoomEnum.value
                     )
                     try:
-                        driver.executeScript("arguments[0].click();", targetBtn)
+                        targetBtn.click()
                     except Exception:
                         result.update(
                             result="FAILED", reason="CLICK_FAILED", retryable=True
@@ -730,7 +776,7 @@ def getNaverReservation(driver: driver.Driver, monthSize: int) -> tuple:
                     '//button[contains(@class, "DatePeriodCalendar__next")]'
                 )
                 if btn.is_enabled():
-                    driver.executeScript("arguments[0].click();", btn)
+                    btn.click()
                     _safeDriverCall(lambda: driver.waitForDocumentReady(10), None)
                     randomRealSleep()
                 else:
