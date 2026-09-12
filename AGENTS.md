@@ -60,6 +60,16 @@
   - 초기화 전에 `_cleanup_orphan_processes_for_profile()` 이 선행되어 프로필을 잡고 있는 Chrome/chromedriver 가 없는가?
   - 로그에 "profile wiped and retried" / "session persisted to profile" 류 이벤트가 명확히 남는가? (재로그인 빈도 추적용)
 
+### 로그인 시 입력/조작 패턴 (중요)
+- **전제**: 로그인 **횟수**를 줄여도 로그인하는 **순간**의 행동이 기계적이면 동일하게 탐지된다. 네이버 로그인 페이지는 키 입력 타이밍과 페이지 진입 경로를 함께 본다. 아래 항목은 성능/단순화를 이유로 되돌리지 말 것.
+- **자격증명 입력은 문자 단위로 한다.** `ChromeDriver._typeLikeHuman()` 이 한 글자씩 `send_keys` 하며 `KEYSTROKE_DELAY_RANGE`(80~250ms) 만큼 랜덤 대기한다. `field.send_keys(value)` 로 문자열을 한 번에 넣는 방식은 키 간격이 0ms에 가깝고 완전히 균일해 **금지**.
+- **아이디 → 비밀번호 필드 전환 사이에 `FIELD_SWITCH_DELAY_RANGE` 대기를 둔다.**
+- **클릭은 `moveAndClick()` 으로 한다.** ActionChains `move_to_element` → pause → click 순서로 mousemove/hover 이벤트를 남긴다. `element.click()` 직접 호출은 포인터 흔적이 전혀 없으므로 로그인 화면(입력 필드, 로그인 유지 체크박스, 로그인 버튼)에서는 사용하지 않는다.
+- **마지막 키 입력과 로그인 버튼 클릭 사이에 `randomSleep()` 을 둔다.** 제출 전·후 양쪽 모두 필요하다. 입력이 끝난 순간 바로 제출하는 것은 사람이 만들 수 없는 패턴이다.
+- **로그인 페이지는 네이버가 리다이렉트해 준 URL을 그대로 사용한다.** `performLogin()` 이 현재 URL을 확인해 이미 로그인 페이지면 재이동하지 않는다. 맨 `nidlogin.login` 으로 다시 `goTo` 하면 네이버가 붙여 준 `url=` continuation 파라미터가 사라지고 referrer 없는 직접 진입이 되므로 **금지**.
+- **타이밍 상수는 `chromeDriver.py` 의 클래스 상수(`KEYSTROKE_DELAY_RANGE`, `FIELD_SWITCH_DELAY_RANGE`, `POINTER_SETTLE_DELAY_RANGE`)로만 조정한다.** 0에 가깝게 줄이면 위 보호가 전부 무의미해진다.
+- **로그인 1회당 약 6~9초가 추가되는 것은 의도된 비용이다.** 로그인은 세션 만료 시에만 발생하므로 전체 동기화 시간에는 거의 영향이 없다.
+
 ---
 
 ## 모듈별 역할 및 책임
