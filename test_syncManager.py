@@ -181,7 +181,12 @@ class TestPerformLogin:
         target_url = "https://partner.booking.naver.com/bizes/899762/booking-list-view"
         mock_driver = MagicMock()
         mock_driver.waitForAnySelector.side_effect = TimeoutError("button missing")
-        mock_driver.getCurrentUrl.side_effect = [finalize_url, finalize_url, target_url]
+        mock_driver.getCurrentUrl.side_effect = [
+            finalize_url,
+            finalize_url,
+            finalize_url,
+            target_url,
+        ]
 
         target_loaded = performLogin(
             mock_driver, "login_test_session", targetUrl=target_url
@@ -216,7 +221,10 @@ class TestPerformLogin:
             ["#loginBtn_row", "#log\\.login"], timeout=10
         )
         mock_driver.findBySelector.assert_called_once_with("#loginBtn_row")
-        mock_driver.findBySelector.return_value.click.assert_called_once_with()
+        mock_driver.moveAndClick.assert_called_once_with(
+            mock_driver.findBySelector.return_value
+        )
+        mock_driver.findBySelector.return_value.click.assert_not_called()
 
     @patch("syncManager.id", "test_id")
     @patch("syncManager.pw", "test_pw")
@@ -233,7 +241,31 @@ class TestPerformLogin:
         performLogin(mock_driver, "login_test_session")
 
         mock_driver.findBySelector.assert_called_once_with("#log\\.login")
-        mock_driver.findBySelector.return_value.click.assert_called_once_with()
+        mock_driver.moveAndClick.assert_called_once_with(
+            mock_driver.findBySelector.return_value
+        )
+
+    @patch("syncManager.id", "test_id")
+    @patch("syncManager.pw", "test_pw")
+    @patch("syncManager.randomSleep")
+    @patch("syncManager.randomRealSleep")
+    def test_reuses_the_login_page_naver_redirected_to(
+        self, mock_real_sleep, mock_sleep
+    ):
+        """Reloading the bare login URL drops Naver's `url=` continuation."""
+        mock_driver = MagicMock()
+        mock_driver.getCurrentUrl.return_value = (
+            "https://nid.naver.com/nidlogin.login?url=partner"
+        )
+        mock_driver.waitForAnySelector.return_value = {
+            "selector": "#loginBtn_row",
+            "count": 1,
+        }
+
+        performLogin(mock_driver, "login_test_session")
+
+        mock_driver.goTo.assert_not_called()
+        mock_driver.login.assert_called_once_with("test_id", "test_pw")
 
 
 class TestLoginSession:
@@ -338,6 +370,8 @@ class TestSyncNaver:
             "count": 1,
         }
         mock_driver.getCurrentUrl.side_effect = [
+            # Partner page redirect, then the same login page performLogin reuses.
+            "https://nid.naver.com/nidlogin.login?url=partner",
             "https://nid.naver.com/nidlogin.login?url=partner",
             "https://www.naver.com/",
             "https://partner.booking.naver.com/bizes/899762/simple-management",

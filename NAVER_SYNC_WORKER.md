@@ -1,5 +1,16 @@
 # Naver sync worker operations
 
+The production worker runs headed Google Chrome on the fixed Xvfb display
+`127.0.0.1:99`. The cron wrapper starts the Xauthority-protected virtual
+display when needed and exports `DISPLAY` and `XAUTHORITY`; Chrome does not
+silently fall back to headless mode when the display is unavailable.
+`CHROME_HEADLESS=true` is reserved for isolated diagnostics. The configured
+Chrome profile remains persistent across worker runs.
+The wrapper also exports `TZ=Asia/Seoul` so the browser locale and timezone are
+consistent; worker event timestamps remain explicitly UTC.
+Run it manually from the repository with `./run_naver_sync.sh`; the existing
+cron compatibility wrapper delegates to the same script.
+
 The worker, rather than the Application scheduler, owns the Naver synchronization schedule.
 
 Required environment variables:

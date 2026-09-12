@@ -258,17 +258,27 @@ def performLogin(
     loginButtonSelectors = ["#loginBtn_row", "#log\\.login"]
 
     try:
-        driverInstance.goTo(naverLoginUrl)
+        currentUrl = _safeDriverCall(driverInstance.getCurrentUrl, "")
+        if _isNaverLoginUrl(currentUrl):
+            # Naver redirected us here with its own `url=` continuation. Loading
+            # the bare login URL again would drop that parameter and arrive
+            # without a referrer, which a real browser flow never does.
+            log.info(f"[Login] 리다이렉트된 로그인 페이지 재사용: currentUrl={currentUrl}")
+        else:
+            driverInstance.goTo(naverLoginUrl)
+            log.info("네이버 로그인 페이지 이동")
         _checkAuthenticationProtection(driverInstance, sessionId)
         _authenticationEvent("LOGIN_ATTEMPT", sessionId)
-        log.info("네이버 로그인 페이지 이동")
         driverInstance.login(id, pw)
         matchedLoginButton = driverInstance.waitForAnySelector(
             loginButtonSelectors, timeout=10
         )
         loginButtonSelector = matchedLoginButton["selector"]
         log.info(f"[Login] Login button detected: selector={loginButtonSelector}")
-        driverInstance.findBySelector(loginButtonSelector).click()
+        # Submitting in the same instant the last character lands is the pattern
+        # a human never produces; pause before the click as well as after it.
+        randomSleep(driverInstance)
+        driverInstance.moveAndClick(driverInstance.findBySelector(loginButtonSelector))
         _authenticationEvent("LOGIN_SUBMITTED", sessionId)
         randomSleep(driverInstance)
         randomRealSleep()

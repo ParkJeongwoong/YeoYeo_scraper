@@ -36,6 +36,10 @@ class Driver(metaclass=ABCMeta):
         pass
 
     @abstractmethod
+    def moveAndClick(self, element):
+        pass
+
+    @abstractmethod
     def login(self):
         pass
 

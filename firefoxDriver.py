@@ -87,6 +87,9 @@ class FirefoxDriver(driver.Driver):
             Keys.CONTROL
         ).perform()
 
+    def moveAndClick(self, element):
+        ActionChains(self.driver).move_to_element(element).click(element).perform()
+
     def login(self, id, pw):
         self.driver.execute_script(
             f"document.querySelector('input[id=\"id\"]').setAttribute('value', '{id}')"

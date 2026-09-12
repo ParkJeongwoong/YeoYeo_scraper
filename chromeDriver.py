@@ -3,6 +3,7 @@ import driver
 import logging
 import os
 import platform
+import random
 import shutil
 import signal
 import subprocess
@@ -775,6 +776,11 @@ class FDExhaustedError(Exception):
 
 class ChromeDriver(driver.Driver):
     BROWSER_LANGUAGE = "ko-KR"
+    # Naver's login page inspects input timing, so keystrokes and clicks are
+    # spread over human-scale, randomized gaps instead of firing back to back.
+    KEYSTROKE_DELAY_RANGE = (0.08, 0.25)
+    FIELD_SWITCH_DELAY_RANGE = (0.4, 1.2)
+    POINTER_SETTLE_DELAY_RANGE = (0.15, 0.45)
     ACCEPT_LANGUAGES = "ko-KR,ko,en-US,en"
     CDP_LOCALE = "ko_KR"
     STARTUP_LANGUAGE = "ko-KR"
@@ -803,6 +809,11 @@ class ChromeDriver(driver.Driver):
         self.use_subprocess = self._get_bool_env("UC_USE_SUBPROCESS", default=False)
         self.has_display_server = self._has_display_server()
         self.run_headless = self._should_run_headless()
+        if not self.run_headless and not self.has_display_server:
+            raise BrowserStartupError(
+                "Headed Chrome requires DISPLAY or WAYLAND_DISPLAY; "
+                "start the configured virtual display before launching the worker"
+            )
         self.user_multi_procs = self._should_enable_uc_multi_procs()
         self.active_chrome_profile_path = None
         self.driver = None
@@ -985,11 +996,9 @@ class ChromeDriver(driver.Driver):
         return any(os.getenv(name) for name in self.DISPLAY_ENV_VARS)
 
     def _should_run_headless(self) -> bool:
-        if not self.debug_mode:
-            return True
-        if platform.system() == "Linux" and not self.has_display_server:
-            return True
-        return False
+        # Production defaults to a real (possibly virtual) display. Headless is
+        # retained only as an explicit opt-in for isolated diagnostics.
+        return self._get_bool_env("CHROME_HEADLESS", default=False)
 
     def _should_enable_uc_multi_procs(self) -> bool:
         env_value = os.getenv("UC_USER_MULTI_PROCS")
@@ -1810,6 +1819,21 @@ data.getHighEntropyValues([
             Keys.CONTROL
         ).perform()
 
+    def moveAndClick(self, element):
+        # element.click() is synthesized by the driver and leaves no pointer
+        # trail. Moving to the element first produces the mousemove/hover
+        # events that precede a real click.
+        ActionChains(self.driver).move_to_element(element).pause(
+            random.uniform(*self.POINTER_SETTLE_DELAY_RANGE)
+        ).click(element).perform()
+
+    def _typeLikeHuman(self, field, value):
+        # A single send_keys() call for the whole string produces near-zero,
+        # perfectly uniform key intervals. Type one character at a time.
+        for character in value:
+            field.send_keys(character)
+            self.wait(random.uniform(*self.KEYSTROKE_DELAY_RANGE))
+
     def login(self, id, pw):
         # 페이지가 완전히 로드될 때까지 대기
         WebDriverWait(self.driver, 10).until(
@@ -1818,19 +1842,21 @@ data.getHighEntropyValues([
 
         # WebDriver input updates the live value and dispatches input events,
         # allowing page listeners to keep their state in sync with the DOM.
-        for field_id, value in (("id", id), ("pw", pw)):
+        for index, (field_id, value) in enumerate((("id", id), ("pw", pw))):
             field = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.ID, field_id))
             )
-            field.click()
+            if index > 0:
+                self.wait(random.uniform(*self.FIELD_SWITCH_DELAY_RANGE))
+            self.moveAndClick(field)
             field.send_keys(Keys.CONTROL, "a")
-            field.send_keys(value)
+            self._typeLikeHuman(field, value)
 
         # 로그인 상태 유지 체크박스 클릭
         try:
             keep_login_checkbox = self.driver.find_element(By.ID, "keep")
             if not keep_login_checkbox.is_selected():
-                keep_login_checkbox.click()
+                self.moveAndClick(keep_login_checkbox)
                 self.wait(0.5)
         except Exception:
             pass  # 체크박스가 없거나 이미 선택된 경우 무시

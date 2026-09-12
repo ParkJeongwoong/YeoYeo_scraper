@@ -418,19 +418,20 @@ class TestChromeDriverRuntimeFlags:
         instance.has_display_server = has_display_server
         return instance
 
-    def test_should_run_headless_when_debug_mode_is_disabled(self):
+    def test_should_not_run_headless_by_default(self):
         instance = self._make_instance(debug_mode=False, has_display_server=True)
-        assert instance._should_run_headless() is True
-
-    def test_should_run_headless_on_linux_without_display(self):
-        instance = self._make_instance(debug_mode=True, has_display_server=False)
-        with patch("chromeDriver.platform.system", return_value="Linux"):
-            assert instance._should_run_headless() is True
-
-    def test_should_not_run_headless_in_debug_mode_with_display(self):
-        instance = self._make_instance(debug_mode=True, has_display_server=True)
-        with patch("chromeDriver.platform.system", return_value="Linux"):
+        with patch("chromeDriver.os.getenv", return_value=None):
             assert instance._should_run_headless() is False
+
+    def test_should_not_silently_fall_back_to_headless_without_display(self):
+        instance = self._make_instance(debug_mode=True, has_display_server=False)
+        with patch("chromeDriver.os.getenv", return_value=None):
+            assert instance._should_run_headless() is False
+
+    def test_headless_requires_explicit_opt_in(self):
+        instance = self._make_instance(debug_mode=False, has_display_server=False)
+        with patch("chromeDriver.os.getenv", return_value="true"):
+            assert instance._should_run_headless() is True
 
     def test_get_bool_env_uses_default_when_variable_is_missing(self):
         instance = self._make_instance()
@@ -558,13 +559,45 @@ class TestChromeDriverInput:
         instance._closed = True
         instance.driver = MagicMock()
         username, password = MagicMock(), MagicMock()
-        with patch("chromeDriver.WebDriverWait") as wait:
+        with patch("chromeDriver.WebDriverWait") as wait, patch.object(
+            instance, "moveAndClick"
+        ) as moveAndClick, patch.object(instance, "wait"):
             wait.return_value.until.side_effect = [username, username, password]
             instance.login("test-user", "test-password")
         for field, value in ((username, "test-user"), (password, "test-password")):
-            field.click.assert_called_once_with()
-            assert field.send_keys.call_args_list[-1] == call(value)
+            moveAndClick.assert_any_call(field)
+            typed = [c.args[0] for c in field.send_keys.call_args_list[1:]]
+            assert "".join(typed) == value
         instance.driver.execute_script.assert_not_called()
+
+    def test_login_spreads_keystrokes_over_randomized_delays(self):
+        """Naver flags the uniform, near-zero intervals of a bulk send_keys."""
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance._closed = True
+        instance.driver = MagicMock()
+        field = MagicMock()
+        with patch.object(instance, "wait") as sleep:
+            instance._typeLikeHuman(field, "abc")
+        assert field.send_keys.call_args_list == [call("a"), call("b"), call("c")]
+        lower, upper = ChromeDriver.KEYSTROKE_DELAY_RANGE
+        delays = [c.args[0] for c in sleep.call_args_list]
+        assert len(delays) == 3
+        assert all(lower <= delay <= upper for delay in delays)
+
+    def test_move_and_click_emits_pointer_movement_before_clicking(self):
+        instance = ChromeDriver.__new__(ChromeDriver)
+        instance._closed = True
+        instance.driver = MagicMock()
+        element = MagicMock()
+        with patch("chromeDriver.ActionChains") as actionChains:
+            chain = actionChains.return_value
+            chain.move_to_element.return_value = chain
+            chain.pause.return_value = chain
+            chain.click.return_value = chain
+            instance.moveAndClick(element)
+        chain.move_to_element.assert_called_once_with(element)
+        chain.click.assert_called_once_with(element)
+        chain.perform.assert_called_once_with()
 
     def test_navigation_waits_for_document_state(self):
         instance = ChromeDriver.__new__(ChromeDriver)

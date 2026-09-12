@@ -8,20 +8,44 @@
 - **Swagger UI**: 서버 실행 후 `http://localhost:5000/docs` 접속
 
 ### 실행 환경 (운영)
-- **플랫폼**: AWS EC2 (Linux)
-- **Chrome 실행**: Headless 모드 (디스플레이 서버 없음)
+- **플랫폼**: 동기화 worker는 HomeServer Cron에서 실행 (TW-27). 기존 Flask Scraping EC2와 실행 위치를 구분한다.
+- **Chrome 실행**: Xvfb `127.0.0.1:99` 위의 headed 모드. 운영 기본값에서
+  `--headless`를 사용하지 않으며 cron wrapper가 가상 디스플레이를 준비한다.
 - **프로세스 관리**: `/proc/<pid>` 기반 상태 확인, `pgrep`/`pkill`, `fcntl.flock` 기반 프로필 락 사용 가능
 - **시그널**: SIGTERM/SIGKILL 정상 동작
 - **코드 리뷰/버그 판단 기준**: Linux 동작을 우선시하고, Windows 관련 분기 코드는 로컬 개발용으로만 간주
 - **FD 모니터링**: `/proc/self/fd` 로 현재 FD 수 추적 (`FD_WARNING_THRESHOLD=800`, `FD_CRITICAL_THRESHOLD=950`)
 - **동시성 제어**: `MAX_CONCURRENT_BROWSERS` 세마포어 + 프로필 락(fcntl)
-- **Chrome 버전**: **146 고정** (EC2에 설치된 Chrome 도 146). `version_main=146` 하드코딩은 의도된 것이며 버그가 아님. 버전 변경 시 운영팀이 수동으로 업데이트.
+- **Chrome 버전**: **146 고정**. HomeServer의 `CHROME_BINARY_PATH`는
+  `/home/dvlprjw/.local/bin/yeoyeo-google-chrome`이며 현재 Google Chrome
+  146.0.7680.164를 실행한다. `version_main=146` 하드코딩은 의도된 것이며
+  버전 변경 시 운영팀이 수동으로 함께 업데이트한다.
 - **재발 방지 규칙 (2026-04-22 장애)**:
   - `SessionNotCreatedException: cannot connect to chrome at 127.0.0.1:<port>` 는 우선 `Chrome 기동 직후 비정상 종료` 로 판단할 것. 시작 실패를 곧바로 메모리 누수로 단정하지 말 것.
   - `UC_USER_MULTI_PROCS` 는 **명시적 env opt-in일 때만 활성화**할 것. "patched binary가 이미 있으니 자동 활성화" 같은 추론 기반 기본값 변경은 금지.
   - 시작 로그에 `userMultiProcs=False` 가 찍히는 것이 기본 정상 상태다. 운영에서 `true` 가 보이면 환경변수 또는 코드 경로를 다시 확인할 것.
   - `uc.Chrome()` 가 객체를 반환하기 전에 예외를 던질 수 있으므로, 시작 실패 시에도 프로필 기준 orphan cleanup 을 반드시 수행해야 한다.
   - 프로필 락/고아 프로세스 정리 로직을 수정할 때는 "동시 실행 중인 정상 세션을 죽이지 않는지" 와 "시작 실패 후 잔여 프로세스가 남지 않는지" 를 함께 검토할 것.
+
+### 운영 배포 절차
+
+- 배포 전 운영 서버의 현재 브랜치, 커밋, 작업 트리 상태를 확인한다. 운영 중인
+  로컬 수정이나 미추적 파일을 임의로 덮어쓰거나 삭제하지 않는다.
+- 배포 대상 브랜치에서 반드시 `git pull --ff-only`로 최신 코드를 먼저 받는다.
+- 운영 Python 명령은 시스템 `python3`가 아니라 프로젝트 가상환경의
+  `/home/ubuntu/app/scraping/venv/bin/python`과
+  `/home/ubuntu/app/scraping/venv/bin/pip`을 사용한다. 필요한 경우 해당 venv에서
+  `python -m pip install -r requirements.txt`를 실행한다.
+- 코드와 의존성 준비가 끝난 뒤 기존 `flaskServer.py` 프로세스를 반드시
+  `SIGTERM`으로 종료하고, 종료 여부를 확인한다. 제한 시간 안에 종료되지 않을
+  때만 해당 PID에 `SIGKILL`을 사용한다. PID를 확인하지 않은 광범위한 `pkill`은
+  피한다.
+- 기존 프로세스가 완전히 종료된 뒤 venv의 Python으로
+  `nohup ./venv/bin/python flaskServer.py > nohup.out 2>&1 &`를 실행한다.
+- 재시작 후 새 PID의 실행 명령과 venv 경로를 확인하고, 헬스체크 및 bounded 로그
+  확인으로 정상 기동과 오류 재발 여부를 검증한다.
+- 프로세스 종료부터 새 프로세스 기동까지 짧은 서비스 중단이 발생할 수 있으므로,
+  배포 전에 사용자에게 예상 영향과 롤백 경로를 알린다.
 
 ### 네이버 로그인 최소화 제약 (중요)
 - **전제**: 네이버는 selenium 기반 자동 로그인을 **비정상 접근**으로 판별한다. 매 요청마다 로그인을 수행하면 일정 시점부터 **captcha 강제 노출 → IP 블록** 으로 이어져 서비스가 정지된다.
@@ -147,18 +171,20 @@ class NewEndpoint(Resource):
 ### 3. **chromeDriver.py** - Chrome 웹드라이버 구현체
 **역할**:
 - Chrome 브라우저 자동화
-- 봇 감지 회피 설정 (selenium-stealth 적용)
-- Headless 모드 실행
+- undetected-chromedriver 3.5.5 기반 Chrome 자동화
+- Xvfb 가상 디스플레이의 headed 모드 실행
 
 **주요 특징**:
-- `--headless=new` 옵션으로 백그라운드 실행
-- User-Agent 위장
-- `navigator.webdriver` 속성 제거
-- WebGL 정보 조작으로 봇 감지 우회
+- 운영 기본값은 `--headless` 미사용. `CHROME_HEADLESS=true`는 격리된 진단에만 사용
+- Chrome 기본 언어 설정과 Intl 로케일 설정 사용
+- 진단용 Headless User-Agent는 실제 브라우저의 UA-CH metadata를 함께 보존하면서
+  같은 버전의 데스크톱 `Chrome` 토큰으로 정규화함. WebGL/navigator 값은
+  자체 위장하지 않음
+- 지문과 입력 이벤트 검증: `doc/tw28-browser-validation.md`
 
 **수정 시 주의사항**:
-- 봇 감지가 강화되면 `getDriver()` 메서드의 JavaScript 조작 코드 수정
-- Headless 모드 해제 시 `--headless=new` 옵션 제거
+- 보호조치 발생 시 자동 재시도를 중단하고 `NAVER_AUTH` 상태 로그로 원인을 확인
+- headed 운영 모드에서는 `DISPLAY=127.0.0.1:99`와 Xvfb 상태를 먼저 확인
 - 브라우저 버전 업데이트 시 ChromeDriver 버전 확인
 - `user_multi_procs` 는 기본값으로 자동 활성화하지 말 것. 필요 시 `UC_USER_MULTI_PROCS=true` 를 운영에서 명시한 경우에만 켤 것
 - 시작 직후 `cannot connect to chrome at 127.0.0.1:<port>` 가 발생하면 `메모리 누수` 보다 `기동 실패 + 잔여 프로세스/프로필 상태` 를 먼저 의심할 것
@@ -174,11 +200,7 @@ def getOptions(self) -> Options:
     # ... 나머지 옵션
     return options
 
-# 새로운 봇 감지 우회 스크립트 추가
-def getDriver(self, options):
-    driver = webdriver.Chrome(options=options)
-    driver.execute_script("/* 새로운 우회 코드 */")
-    return driver
+# 지문 검증은 browser_diagnostics.html 및 test_browser_runtime.py 참조
 ```
 
 ---
@@ -229,7 +251,7 @@ def getDriver(self, options):
 
 **수정 시 주의사항**:
 - 네이버 URL 변경 시 상단 상수 수정 (`naverBizUrl`, `simpleReservationManagementUrl` 등)
-- 로그인 실패 시 `randomSleep()`, `randomRealSleep()` 시간 조정
+- 로그인 실패 시 보호조치/세션 상태를 확인하고 반복 로그인을 하지 않는다.
 - 날짜 파싱 로직은 `makeTargetDateList()`, `makeTargetDate()` 함수에서 처리
 - `.env` 파일에 `ID`, `PASSWORD` 환경변수 필수
 
@@ -375,7 +397,7 @@ ACTIVATION_KEY=API_인증키
 ### **requirements.txt** (주요 의존성)
 - `flask==3.0.3` - 웹 서버
 - `selenium==4.23.1` - 브라우저 자동화
-- `selenium-stealth==1.0.6` - 봇 감지 우회
+- `undetected-chromedriver==3.5.5` - Chrome 드라이버 (Chrome 146 고정)
 - `beautifulsoup4==4.12.3` - HTML 파싱
 - `python-dotenv==1.0.1` - 환경변수 로드
 
@@ -435,8 +457,8 @@ def new_api():
 **증상**: "로그인 성공" 로그 후 예외 발생
 
 **수정 파일**:
-- `syncManager.py` - `randomSleep()` 시간 증가
-- `chromeDriver.py` - 봇 감지 우회 스크립트 추가
+- `syncManager.py` - `NAVER_AUTH` 상태와 보호조치 감지 확인
+- `chromeDriver.py` - 프로필 재사용 및 실제 브라우저 지문 검증
 
 **체크리스트**:
 - [ ] 네이버 계정 정상 여부

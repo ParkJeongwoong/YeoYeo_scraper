@@ -92,3 +92,26 @@ ADDITIONAL_AUTH, SESSION_UNCONFIRMED, SESSION_RECOVERY_FAILED를 사용한다.
 
 HomeServer cron, 지속 Chrome 프로필 및 worker의 인증 실패 이후 중단 정책은
 계속 유지해야 한다. 운영 배포는 별도 승인 대상이다.
+
+## 2026-09-10 HomeServer headed 검증
+
+Ubuntu 패키지의 Xvfb를 로컬 루프백 디스플레이 `127.0.0.1:99`에
+1920x1080, 96 DPI, 24-bit로 구성했다. Chrome 운영 기본값에서 headless를
+제거했으며, 디스플레이가 없을 때 자동으로 headless로 강등하지 않는다.
+Xvfb는 권한 `600`의 전용 Xauthority 파일을 요구하며 인증 파일 없는 접속이
+거부되는 것을 확인했다.
+cron wrapper는 Chrome 프로세스에 `TZ=Asia/Seoul`을 전달한다. worker의 구조화
+이벤트 로그는 코드에서 UTC를 명시하므로 기존 timestamp 형식은 유지된다.
+
+네이버에 접속하지 않고 로컬 진단 페이지만 사용해 다음을 확인했다.
+
+- Chrome 런타임 메타데이터의 `headless=false`
+- User-Agent에 `HeadlessChrome`이 없고 Google Chrome 146으로 표시됨
+- `screen`이 1920x1080, color depth 24로 표시됨
+- undetected-chromedriver 경로에서 `navigator.webdriver=false`
+- 같은 임시 프로필을 두 번 열었을 때 쿠키와 localStorage가 유지됨
+- 전체 단위 테스트 176개 통과 및 실제 브라우저 테스트 3개 통과
+
+물리 GPU가 없는 Xvfb의 headed Chrome에서는 진단 페이지의 WebGL context가
+`null`이었다. headless 제거가 물리 데스크톱과 동일한 렌더링 지문을 보장하지
+않으므로 이 차이는 잔여 위험으로 기록한다.
